@@ -1,0 +1,242 @@
+/* === Tailwind core === */
+@import "tailwindcss";
+
+/* ========== THEME TOKENS (Tailwind v4) ========== */
+@theme {
+  /* Brand */
+  --color-brand:        #2563eb; /* blue-600 */
+  --color-brand-600:    #1d4ed8; /* blue-700 */
+  --color-brand-700:    #1e40af; /* blue-800 */
+  --color-accent:       #0ea5e9; /* sky-500 */
+
+  /* Surface (LIGHT) */
+  --color-bg:           #f8fafc;  /* slate-50 */
+  --color-surface:      #f1f5f9;  /* slate-100 */
+  --color-card:         #ffffff;
+  --color-fg:           #0f172a;
+  --color-muted:        #64748b;
+  --color-border:       #e2e8f0;
+
+  /* Surface (DARK) */
+  --color-bg-dark:      #0b1220;
+  --color-surface-dark: #0f172a;
+  --color-card-dark:    #111827;
+  --color-fg-dark:      #f1f5f9;
+  --color-muted-dark:   #94a3b8;
+  --color-border-dark:  #334155;
+
+  /* Radius & Shadow */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.04);
+
+  /* Font */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+               Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji",
+               "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
+/* ========== DARK VARIANT SELECTOR ========== */
+@custom-variant dark (&:where(.dark *));
+
+/* ========== BASE ========== */
+:root {
+  color-scheme: light dark;
+  font-family: var(--font-sans);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Layout helpers */
+  --nav-h: 3.5rem;  /* = 56px, match h-14 */
+  --sbw:   18rem;   /* sidebar width default; JS bisa override */
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+}
+.dark body {
+  background-color: var(--color-bg-dark);
+  color: var(--color-fg-dark);
+}
+
+/* Selection */
+::selection { background: color-mix(in oklab, var(--color-brand) 22%, transparent); }
+
+/* Scrollbar */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+.dark *::-webkit-scrollbar-thumb { background: #475569; }
+
+/* Focus visible */
+:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 2px; }
+
+/* Link */
+a { color: var(--color-brand); text-decoration: none; transition: color .2s ease; }
+a:hover { color: var(--color-brand-600); }
+
+/* Headings */
+h1,h2,h3,h4,h5,h6 { font-weight: 700; letter-spacing: -0.01em; }
+
+/* ========== UTILITIES ========== */
+@layer utilities {
+  .container { @apply max-w-7xl mx-auto px-4; }
+  .heading { @apply text-3xl md:text-4xl font-bold tracking-tight; }
+  .subheading { @apply text-lg text-slate-600 dark:text-slate-300; }
+  .text-muted { @apply text-slate-500 dark:text-slate-400; }
+  .divider { @apply h-px w-full bg-slate-200 dark:bg-slate-700/60; }
+  .grid-auto { @apply grid gap-4 sm:grid-cols-2 lg:grid-cols-3; }
+  .shadow-card { box-shadow: var(--shadow-card); }
+
+  /* Shell helpers */
+  .with-navbar { padding-top: var(--nav-h); }
+  .with-sidebar { padding-left: 0; }
+  @media (min-width: 768px) {
+    .with-sidebar { padding-left: var(--sbw); }
+  }
+}
+
+/* ========== COMPONENTS ========== */
+@layer components {
+  /* --- Card --- */
+  .card {
+    background-color: var(--color-card);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    padding: 1rem;
+  }
+  @media (min-width: 768px) { .card { padding: 1.5rem; } }
+  .dark .card {
+    background-color: color-mix(in oklab, var(--color-card-dark) 92%, transparent);
+    border-color: var(--color-border-dark);
+    backdrop-filter: blur(4px);
+  }
+
+  /* --- Buttons --- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-white transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2;
+    background-color: var(--color-brand);
+  }
+  .btn:hover { background-color: var(--color-brand-600); }
+
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium border text-slate-800 dark:text-slate-100 transition-colors duration-200;
+    border-color: var(--color-border);
+    background: transparent;
+  }
+  .btn-outline:hover { @apply bg-slate-50 dark:bg-slate-800/60; }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800/60;
+  }
+  .btn-danger  { @apply bg-red-600 hover:bg-red-700 text-white; }
+  .btn-success { @apply bg-emerald-600 hover:bg-emerald-700 text-white; }
+
+  /* --- Form Controls --- */
+  .input, .textarea, .select {
+    @apply w-full rounded-lg border px-3 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 outline-none transition-shadow;
+    background-color: var(--color-card);
+    border-color: var(--color-border);
+  }
+  .dark .input, .dark .textarea, .dark .select {
+    background-color: color-mix(in oklab, var(--color-card-dark) 90%, transparent);
+    border-color: var(--color-border-dark);
+  }
+  .input:focus, .textarea:focus, .select:focus {
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-brand) 55%, transparent);
+    border-color: var(--color-brand);
+  }
+  .textarea { min-height: 6rem; }
+  .select { padding-right: 2rem; }
+
+  /* --- Badge --- */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold bg-slate-100 text-slate-700;
+  }
+  .dark .badge { @apply dark:bg-slate-800 dark:text-slate-200; }
+  .badge-brand  { background: color-mix(in oklab, var(--color-brand) 15%, transparent); color: var(--color-brand); }
+  .badge-success{ @apply bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200; }
+  .badge-danger { @apply bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200; }
+
+  /* --- Navbar (MATCH Sidebar) --- */
+  .navbar {
+    @apply w-full border-b;
+    position: fixed; top: 0; inset-inline: 0; z-index: 50;
+    /* gunakan surface yg sama dgn sidebar */
+    background-color: color-mix(in oklab, var(--color-surface) 95%, transparent);
+    backdrop-filter: blur(10px);
+    border-color: var(--color-border);
+    color: var(--color-fg);
+    box-shadow: 0 4px 20px -8px rgba(0,0,0,0.18);
+    transition: background-color .2s ease, border-color .2s ease, color .2s ease;
+  }
+  .navbar::after {
+    content: "";
+    position: absolute;
+    bottom: -1px; left: 0; right: 0; height: 1px;
+    background: linear-gradient(to right, transparent, rgba(0,0,0,0.08), transparent);
+  }
+  .dark .navbar {
+    background-color: color-mix(in oklab, var(--color-surface-dark) 60%, transparent);
+    border-color: var(--color-border-dark);
+    color: var(--color-fg-dark);
+  }
+
+  /* --- Sidebar --- */
+  .sidebar {
+    @apply h-full border-r;
+    background-color: var(--color-surface);
+    border-color: var(--color-border);
+    color: var(--color-fg);
+    box-shadow: inset -1px 0 0 rgba(0,0,0,0.04);
+    backdrop-filter: blur(6px);
+    transition: background-color .2s ease, border-color .2s ease, color .2s ease;
+  }
+  .dark .sidebar {
+    background-color: color-mix(in oklab, var(--color-surface-dark) 60%, transparent);
+    border-color: var(--color-border-dark);
+    color: var(--color-fg-dark);
+    box-shadow: inset -1px 0 0 rgba(148,163,184,0.18);
+  }
+
+  /* Netralisir warna link di dalam sidebar */
+  .sidebar a { color: inherit; }
+  .sidebar a:hover { color: inherit; }
+}
+
+/* --- States --- */
+[disabled], :disabled { cursor: not-allowed; opacity: .6; }
+
+/* --- Table --- */
+@layer components {
+  .table { @apply w-full border-collapse; }
+  .table thead th {
+    @apply text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 border-b pb-2;
+    border-color: var(--color-border);
+  }
+  .dark .table thead th { border-color: var(--color-border-dark); }
+
+  .table tbody tr { border-bottom: 1px solid var(--color-border); }
+  .dark .table tbody tr { border-color: var(--color-border-dark); }
+
+  .table tbody tr:hover { background: #f1f5f9; }
+  .dark .table tbody tr:hover {
+    background: color-mix(in oklab, var(--color-surface-dark) 70%, transparent);
+  }
+
+  .table td { @apply py-3 text-sm text-slate-800 dark:text-slate-200; }
+}
+
+/* --- Responsive Helpers --- */
+@layer utilities {
+  .section { @apply py-8 md:py-12; }
+  .stack { @apply space-y-4 md:space-y-6; }
+}
