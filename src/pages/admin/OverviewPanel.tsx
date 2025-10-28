@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import API from "@/api/axios"
 
 type Shift = "S1" | "S2" | "S3"
 type Role  = "ADMIN" | "MASTER" | "IPQC" | "OQC"
@@ -16,17 +17,14 @@ type Summary = {
     date: string
     productName: string
     shift: Shift
-    // IPQC fields
     beforeIpqc?: number
     afterIpqc?: number
     onGoingPostcured?: number
     afterPostcured?: number
-    // OQC fields
     beforeOqc?: number
     afterOqc?: number
-    // meta
     author: string
-    byRole?: Role           // <-- kalau BE kirim, kita manfaatkan untuk filter
+    byRole?: Role
   }>
 }
 
@@ -41,9 +39,6 @@ const EMPTY: Summary = {
 const fmt = (n: number | string | undefined) =>
   typeof n === "number" ? Intl.NumberFormat("id-ID").format(n) : (n ?? "")
 
-function getToken() {
-  try { return localStorage.getItem("token") || "" } catch { return "" }
-}
 function getUserRole(): Role | null {
   try { return JSON.parse(localStorage.getItem("user") || "null")?.role ?? null } catch { return null }
 }
@@ -106,24 +101,19 @@ export default function OverviewPanel() {
     try {
       setError(null)
       setLoading(true)
-      const res = await fetch(`/api/summary?take=10`, {
+
+      // ✅ Pakai axios instance (baseURL dari VITE_API_URL)
+      const { data: json } = await API.get("/summary", {
+        params: { take: 10 },
         signal,
-        headers: {
-          accept: "application/json",
-          Authorization: `Bearer ${getToken()}`,
-        },
       })
-      if (!res.ok) {
-        const msg = await res.text().catch(() => "")
-        throw new Error(msg || `Request failed: ${res.status}`)
-      }
-      const json = await res.json()
+
       const normalized = normalize(json)
       setData(normalized)
       setLastUpdated(new Date())
       retryRef.current = 0
     } catch (e: any) {
-      if (e?.name === "AbortError") return
+      if (e?.name === "CanceledError" || e?.name === "AbortError") return
       console.error(e)
       setError(e?.message || "Gagal memuat ringkasan")
       setData(EMPTY)
@@ -164,10 +154,7 @@ export default function OverviewPanel() {
   // Data yang ditampilkan → filter sesuai mode bila ada byRole
   const rows = useMemo(() => {
     if (kind === "ALL") return data.lastEntries
-    return data.lastEntries.filter(r => {
-      // kalau BE kasih byRole, pakai itu; kalau tidak ada, fallback tampilkan semua (tidak memaksa filter)
-      return !r.byRole || r.byRole === kind
-    })
+    return data.lastEntries.filter(r => !r.byRole || r.byRole === kind)
   }, [data.lastEntries, kind])
 
   // Export CSV: kolom menyesuaikan mode
@@ -249,7 +236,6 @@ export default function OverviewPanel() {
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          {/* Switch mode cepat */}
           <select
             className="btn-ghost"
             value={kind}
