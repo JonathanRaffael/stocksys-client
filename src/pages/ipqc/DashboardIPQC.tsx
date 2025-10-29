@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import API from "@/api/axios" // sesuaikan path jika alias @ belum diset
 
 /* ================== Types (matching Prisma) ================== */
 type Shift = "S1" | "S2" | "S3"
@@ -46,8 +47,6 @@ type Summary = {
   totalBeforeOqc: number
   totalAfterOqc: number
   totalHoldOrReturn: number
-
-  // NEW from backend
   netAvailable: number
   passRateIpqc: number
   passRatePostcure: number
@@ -72,43 +71,30 @@ function getToken() {
   }
 }
 
-async function readJson<T>(res: Response): Promise<T> {
-  if (res.status === 401) throw new Error("Unauthorized: sesi login habis atau token tidak valid.")
-  if (res.status === 403) throw new Error("Forbidden: role tidak diizinkan.")
-  const ct = res.headers.get("content-type") || ""
-  const body = ct.includes("application/json") ? await res.json() : await res.text()
-  if (!res.ok) throw new Error(typeof body === "string" ? body : body?.error || `Request failed (${res.status})`)
-  return body as T
-}
+/* ---- Axios-based API helpers ---- */
 async function apiGet<T>(path: string) {
-  const res = await fetch(path, { cache: "no-store", headers: { Authorization: `Bearer ${getToken()}` } })
-  return readJson<T>(res)
-}
-async function apiPost<T>(path: string, body: any) {
-  const res = await fetch(path, {
-    method: "POST",
-    cache: "no-store",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
-    body: JSON.stringify(body),
-  })
-  return readJson<T>(res)
-}
-async function apiPatch<T>(path: string, body: any) {
-  const res = await fetch(path, {
-    method: "PATCH",
-    cache: "no-store",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
-    body: JSON.stringify(body),
-  })
-  return readJson<T>(res)
-}
-async function apiDelete<T>(path: string) {
-  const res = await fetch(path, {
-    method: "DELETE",
-    cache: "no-store",
+  const res = await API.get(path, {
     headers: { Authorization: `Bearer ${getToken()}` },
   })
-  return readJson<T>(res)
+  return res.data as T
+}
+async function apiPost<T>(path: string, body: any) {
+  const res = await API.post(path, body, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  })
+  return res.data as T
+}
+async function apiPatch<T>(path: string, body: any) {
+  const res = await API.patch(path, body, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  })
+  return res.data as T
+}
+async function apiDelete<T>(path: string) {
+  const res = await API.delete(path, {
+    headers: { Authorization: `Bearer ${getToken()}` },
+  })
+  return res.data as T
 }
 
 /* ================== Component ================== */
@@ -160,7 +146,7 @@ export default function DashboardIPQC() {
   async function loadSummary() {
     try {
       setError(null)
-      const data = await apiGet<Summary>(`/api/ipqc/summary?${qs}`)
+      const data = await apiGet<Summary>(`/ipqc/summary?${qs}`)
       setSummary(data)
     } catch (e: any) {
       setError(e.message || "Gagal memuat ringkasan")
@@ -170,7 +156,7 @@ export default function DashboardIPQC() {
     try {
       setError(null)
       setLoading(true)
-      const raw = await apiGet<any>(`/api/entries?type=IPQC&${qs}`)
+      const raw = await apiGet<any>(`/entries?type=IPQC&${qs}`)
       const items: DailyEntryDto[] = Array.isArray(raw) ? raw : (raw?.items ?? [])
       setEntries(items)
     } catch (e: any) {
@@ -198,11 +184,12 @@ export default function DashboardIPQC() {
       try {
         setLoadingProducts(true)
         const url = productQuery
-          ? `/api/products?query=${encodeURIComponent(productQuery)}&take=50`
-          : `/api/products?take=50`
+          ? `/products?query=${encodeURIComponent(productQuery)}&take=50`
+          : `/products?take=50`
         const raw = await apiGet<any>(url)
         const items: Product[] = Array.isArray(raw) ? raw : (raw.items ?? [])
-        setProductOpts(items.filter((p) => p.isActive))
+        // fallback isActive kalau API kadang tidak kirim field ini
+        setProductOpts(items.filter((p) => (p.isActive ?? true)))
       } catch {
         setProductOpts([])
       } finally {
@@ -282,7 +269,7 @@ export default function DashboardIPQC() {
 
     try {
       setSubmitting(true)
-      await apiPost("/api/entries", payload)
+      await apiPost("/entries", payload)
       // reset & reload
       setBeforeIpqc(0)
       setAfterIpqc(0)
@@ -308,7 +295,7 @@ export default function DashboardIPQC() {
     const old = entries
     setEntries((prev) => prev.map((e) => (e.id === id ? ({ ...e, ...patch } as DailyEntryDto) : e)))
     try {
-      await apiPatch(`/api/entries/${id}`, patch)
+      await apiPatch(`/entries/${id}`, patch)
       await loadSummary()
       showToast("Perubahan disimpan")
     } catch (e: any) {
@@ -322,7 +309,7 @@ export default function DashboardIPQC() {
     const old = entries
     setEntries((prev) => prev.filter((e) => e.id !== id))
     try {
-      await apiDelete(`/api/entries/${id}`)
+      await apiDelete(`/entries/${id}`)
       await loadSummary()
       showToast("Entri dihapus")
     } catch (e: any) {
@@ -511,7 +498,7 @@ export default function DashboardIPQC() {
                 className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
               />
               {showList && (
-                <div className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow">
+                <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow">
                   {loadingProducts && <div className="px-3 py-2 text-sm text-slate-500">Loading…</div>}
                   {!loadingProducts && productOpts.length === 0 && (
                     <div className="px-3 py-2 text-sm text-slate-500">Tidak ada hasil</div>
