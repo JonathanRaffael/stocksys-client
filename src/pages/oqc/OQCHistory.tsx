@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import API from "@/api/axios" // sesuaikan path alias kamu
 
 /* ================== Types ================== */
 type Shift = "S1" | "S2" | "S3"
@@ -26,21 +27,13 @@ type EntryHistoryDto = {
 }
 
 /* ================== Helpers ================== */
-const todayStr = () => new Date().toISOString().slice(0, 10)
+const todayStr = () => new Date().toLocaleDateString("en-CA") // YYYY-MM-DD lokal (anti offset UTC)
 const fmt = (n: number) => Intl.NumberFormat("id-ID").format(n)
 function getToken() {
   try { return localStorage.getItem("token") || "" } catch { return "" }
 }
-async function readJson<T>(res: Response): Promise<T> {
-  if (res.status === 401) {
-    try { localStorage.removeItem("token"); localStorage.removeItem("user") } catch {}
-    throw new Error("Unauthorized: sesi login habis atau token tidak valid.")
-  }
-  if (res.status === 403) throw new Error("Forbidden: role tidak diizinkan.")
-  const ct = res.headers.get("content-type") || ""
-  const body = ct.includes("application/json") ? await res.json() : await res.text()
-  if (!res.ok) throw new Error(typeof body === "string" ? body : (body as any)?.error || `Request failed (${res.status})`)
-  return body as T
+function readAxios<T>(res: any): T {
+  return (res?.data ?? res) as T
 }
 
 // nilai final yang ditampilkan di tabel (prioritas: changes.new → snapshot → default)
@@ -113,7 +106,7 @@ export default function OQCHistory() {
     return p.toString()
   }, [date, shift, plant, line, debouncedQuery, histOnlyMine, page])
 
-  // Abort controller ref agar fetch lama bisa dibatalkan
+  // Abort controller ref agar request lama bisa dibatalkan
   const abortRef = useRef<AbortController | null>(null)
 
   async function loadHistory() {
@@ -124,19 +117,18 @@ export default function OQCHistory() {
     try {
       setError(null)
       setLoading(true)
-      const res = await fetch(`/api/history?${qs}`, {
-        cache: "no-store",
-        headers: { Authorization: `Bearer ${getToken()}` },
+      const res = await API.get(`/history?${qs}`, {
         signal: ac.signal,
+        headers: { Authorization: `Bearer ${getToken()}` },
       })
-      const raw = await readJson<any>(res)
+      const raw = readAxios<any>(res)
       const nextItems: EntryHistoryDto[] = Array.isArray(raw) ? raw : (raw?.items ?? [])
       const nextTotal: number = Array.isArray(raw) ? nextItems.length : (raw?.total ?? nextItems.length)
       setItems(nextItems)
       setTotal(nextTotal)
     } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        setError(e.message || "Gagal memuat riwayat")
+      if (e?.name !== "CanceledError" && e?.code !== "ERR_CANCELED") {
+        setError(e?.response?.data?.error || e?.message || "Gagal memuat riwayat")
         setItems([])
         setTotal(0)
       }
@@ -295,7 +287,7 @@ export default function OQCHistory() {
               Hari ini
             </button>
             <button
-              onClick={()=>{ const d=new Date(); d.setDate(d.getDate()-1); setDate(d.toISOString().slice(0,10)); setPage(1) }}
+              onClick={()=>{ const d=new Date(); d.setDate(d.getDate()-1); setDate(new Date(d).toLocaleDateString("en-CA")); setPage(1) }}
               className="px-2 py-1 rounded-lg text-xs border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               Kemarin
