@@ -1,14 +1,19 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import path from 'node:path' // ⬅️ penting utk alias
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'), // ⬅️ alias @ -> src
+    },
+  },
   server: {
     proxy: {
-      // teruskan semua request /api ke server Express kamu
       '/api': {
-        target: 'http://localhost:3001', // ganti kalau port API beda
+        target: 'http://localhost:3001',
         changeOrigin: true,
       },
     },
