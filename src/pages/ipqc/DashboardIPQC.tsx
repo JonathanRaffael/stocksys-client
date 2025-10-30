@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import API from "@/api/axios" // sesuaikan path jika alias @ belum diset
+import API from "@/api/axios"
+import { AlertCircle, CheckCircle2, Loader2, Plus, RotateCcw, Zap } from "lucide-react"
 
 /* ================== Types (matching Prisma) ================== */
 type Shift = "S1" | "S2" | "S3"
@@ -73,10 +74,15 @@ function getToken() {
 
 /* ---- Axios-based API helpers ---- */
 async function apiGet<T>(path: string) {
-  const res = await API.get(path, {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  })
-  return res.data as T
+  try {
+    const res = await API.get(path, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    })
+    return res.data as T
+  } catch (error: any) {
+    console.error("[IPQC] API GET error:", error?.response?.data || error?.message || error)
+    throw error
+  }
 }
 async function apiPost<T>(path: string, body: any) {
   const res = await API.post(path, body, {
@@ -116,7 +122,7 @@ export default function DashboardIPQC() {
   const [toast, setToast] = useState<{ type: "success" | "error"; msg: string } | null>(null)
   const showToast = (msg: string, type: "success" | "error" = "success") => {
     setToast({ type, msg })
-    setTimeout(() => setToast(null), 2000)
+    setTimeout(() => setToast(null), 3000)
   }
 
   /* -------- Input Cepat state -------- */
@@ -124,7 +130,6 @@ export default function DashboardIPQC() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [beforeIpqc, setBeforeIpqc] = useState<number>(0)
   const [afterIpqc, setAfterIpqc] = useState<number>(0)
-  const [beforePostcured, setBeforePostcured] = useState<number>(0)
   const [afterPostcured, setAfterPostcured] = useState<number>(0)
   const [note, setNote] = useState<string>("")
 
@@ -136,7 +141,7 @@ export default function DashboardIPQC() {
   const qs = useMemo(() => {
     const p = new URLSearchParams()
     p.set("date", date)
-    p.set("shift", shift)
+    p.set("shift", shift.toUpperCase())
     if (plant) p.set("plant", plant)
     if (line) p.set("line", line)
     return p.toString()
@@ -144,27 +149,72 @@ export default function DashboardIPQC() {
 
   /* -------- Loaders -------- */
   async function loadSummary() {
+    // kita coba endpoint FE saat ini (yang sesuai dengan backend kamu)
+    const urlPrimary = `/ipqc/summary/summary?${qs}`
+    const fallbackUrl = `/ipqc/summary?${qs}`
+
     try {
-      setError(null)
-      const data = await apiGet<Summary>(`/ipqc/summary?${qs}`)
+      let response: any
+      try {
+        response = await apiGet<any>(urlPrimary)
+      } catch (e: any) {
+        // kalau misal kamu nanti benerin backend ke "/", FE ini tetap jalan
+        console.warn("[IPQC] primary summary endpoint failed, trying fallback…")
+        response = await apiGet<any>(fallbackUrl)
+      }
+
+      const data: Summary = {
+        totalBeforeIpqc: response.totalBeforeIpqc ?? 0,
+        totalAfterIpqc: response.totalAfterIpqc ?? 0,
+        totalOnGoingPostcured: response.totalOnGoingPostcured ?? 0,
+        totalAfterPostcured: response.totalAfterPostcured ?? 0,
+        totalBeforeOqc: response.totalBeforeOqc ?? 0,
+        totalAfterOqc: response.totalAfterOqc ?? 0,
+        totalHoldOrReturn: response.totalHoldOrReturn ?? 0,
+        netAvailable: response.netAvailable ?? 0,
+        passRateIpqc: response.passRateIpqc ?? 0,
+        passRatePostcure: response.passRatePostcure ?? 0,
+      }
+
       setSummary(data)
     } catch (e: any) {
-      setError(e.message || "Gagal memuat ringkasan")
+      console.error("[IPQC] loadSummary error:", e?.message || e)
+      // jangan kosongin UI total, tapi kasih 0 biar tetap render
+      setSummary({
+        totalBeforeIpqc: 0,
+        totalAfterIpqc: 0,
+        totalOnGoingPostcured: 0,
+        totalAfterPostcured: 0,
+        totalBeforeOqc: 0,
+        totalAfterOqc: 0,
+        totalHoldOrReturn: 0,
+        netAvailable: 0,
+        passRateIpqc: 0,
+        passRatePostcure: 0,
+      })
     }
   }
+
   async function loadEntries() {
     try {
-      setError(null)
       setLoading(true)
       const raw = await apiGet<any>(`/entries?type=IPQC&${qs}`)
-      const items: DailyEntryDto[] = Array.isArray(raw) ? raw : (raw?.items ?? [])
+      let items: DailyEntryDto[] = []
+      if (Array.isArray(raw)) {
+        items = raw
+      } else if (raw && typeof raw === "object") {
+        items = raw.items ?? raw.data ?? []
+      }
       setEntries(items)
     } catch (e: any) {
+      console.error("[IPQC] loadEntries error:", e?.message || e)
       setError(e.message || "Gagal memuat data")
+      setEntries([])
     } finally {
       setLoading(false)
     }
   }
+
   useEffect(() => {
     loadSummary()
     loadEntries()
@@ -187,9 +237,8 @@ export default function DashboardIPQC() {
           ? `/products?query=${encodeURIComponent(productQuery)}&take=50`
           : `/products?take=50`
         const raw = await apiGet<any>(url)
-        const items: Product[] = Array.isArray(raw) ? raw : (raw.items ?? [])
-        // fallback isActive kalau API kadang tidak kirim field ini
-        setProductOpts(items.filter((p) => (p.isActive ?? true)))
+        const items: Product[] = Array.isArray(raw) ? raw : raw.items ?? []
+        setProductOpts(items.filter((p) => p.isActive ?? true))
       } catch {
         setProductOpts([])
       } finally {
@@ -223,43 +272,52 @@ export default function DashboardIPQC() {
       const tag = (e.target as HTMLElement)?.tagName?.toLowerCase()
       if (tag === "input" || tag === "textarea" || tag === "select") return
       if (e.key.toLowerCase() === "enter") submitEntry()
-      if (e.key.toLowerCase() === "escape") {
-        setSelectedProduct(null)
-        setProductQuery("")
-        setBeforeIpqc(0)
-        setAfterIpqc(0)
-        setBeforePostcured(0)
-        setAfterPostcured(0)
-        setNote("")
-        beforeIpqcSourceRef.current = 0
-      }
+      if (e.key.toLowerCase() === "escape") resetForm()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [])
 
+  /* -------- Reset form helper -------- */
+  const resetForm = () => {
+    setSelectedProduct(null)
+    setProductQuery("")
+    setBeforeIpqc(0)
+    setAfterIpqc(0)
+    setAfterPostcured(0)
+    setNote("")
+    setError(null)
+    beforeIpqcSourceRef.current = 0
+    postTotalRef.current = 0
+  }
+
   /* -------- Submit -------- */
   async function submitEntry() {
     const user = getUser()
-    if (!user?.role) return setError("Sesi login tidak ditemukan. Silakan login ulang.")
-    if (!selectedProduct) {
-      productInputRef.current?.focus()
-      return setError("Pilih produk terlebih dulu.")
+    if (!user?.role) {
+      setError("Sesi login tidak ditemukan. Silakan login ulang.")
+      return
     }
-    if (beforeIpqc < 0 || afterIpqc < 0 || beforePostcured < 0 || afterPostcured < 0) {
-      return setError("Angka tidak boleh negatif.")
+    if (!selectedProduct) {
+      setError("Pilih produk terlebih dulu.")
+      productInputRef.current?.focus()
+      return
+    }
+    if (beforeIpqc < 0 || afterIpqc < 0 || afterPostcured < 0) {
+      setError("Angka tidak boleh negatif.")
+      return
     }
 
     const payload = {
       productId: selectedProduct.id,
       date,
-      shift,
+      shift: shift.toUpperCase() as Shift,
       plant: plant || null,
       line: line || null,
       role: user.role as Role,
       beforeIpqc,
       afterIpqc,
-      onGoingPostcured: beforePostcured,
+      onGoingPostcured: afterIpqc,
       afterPostcured,
       beforeOqc: 0,
       afterOqc: 0,
@@ -267,25 +325,28 @@ export default function DashboardIPQC() {
       note: note || null,
     }
 
+    setSubmitting(true)
+    setError(null)
+
     try {
-      setSubmitting(true)
       await apiPost("/entries", payload)
-      // reset & reload
-      setBeforeIpqc(0)
-      setAfterIpqc(0)
-      setBeforePostcured(0)
-      setAfterPostcured(0)
-      setNote("")
-      setSelectedProduct(null)
-      setProductQuery("")
-      beforeIpqcSourceRef.current = 0
-      await Promise.all([loadSummary(), loadEntries()])
+      resetForm()
       productInputRef.current?.focus()
-      showToast("Entri tersimpan")
+      showToast("✓ Entri tersimpan dengan sukses")
+      setSubmitting(false)
+
+      // reload data
+      setTimeout(async () => {
+        try {
+          await Promise.all([loadSummary(), loadEntries()])
+        } catch (e) {
+          console.error("[IPQC] reload after submit error:", e)
+        }
+      }, 300)
     } catch (e: any) {
-      setError(e.message || "Gagal menyimpan entri")
-      showToast(e.message || "Gagal menyimpan entri", "error")
-    } finally {
+      const errorMsg = e.message || "Gagal menyimpan entri"
+      setError(errorMsg)
+      showToast(errorMsg, "error")
       setSubmitting(false)
     }
   }
@@ -297,13 +358,14 @@ export default function DashboardIPQC() {
     try {
       await apiPatch(`/entries/${id}`, patch)
       await loadSummary()
-      showToast("Perubahan disimpan")
+      showToast("✓ Perubahan disimpan")
     } catch (e: any) {
       setEntries(old)
       setError(e.message || "Gagal update entri")
       showToast(e.message || "Gagal update entri", "error")
     }
   }
+
   async function deleteEntry(id: string) {
     if (!confirm("Hapus entri ini?")) return
     const old = entries
@@ -311,7 +373,7 @@ export default function DashboardIPQC() {
     try {
       await apiDelete(`/entries/${id}`)
       await loadSummary()
-      showToast("Entri dihapus")
+      showToast("✓ Entri dihapus")
     } catch (e: any) {
       setEntries(old)
       setError(e.message || "Gagal hapus entri")
@@ -329,8 +391,7 @@ export default function DashboardIPQC() {
       "Kode",
       "Produk",
       "Before IPQC",
-      "After IPQC",
-      "Before Postcured",
+      "After IPQC / Before Postcured",
       "After Postcured",
       "Note",
     ]
@@ -343,11 +404,12 @@ export default function DashboardIPQC() {
       e.product?.name ?? "",
       e.beforeIpqc,
       e.afterIpqc,
-      e.onGoingPostcured,
       e.afterPostcured,
       (e.note ?? "").replace(/\n/g, " "),
     ])
-    const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n")
+    const csv = [headers, ...rows]
+      .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+      .join("\n")
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -359,16 +421,14 @@ export default function DashboardIPQC() {
 
   /* -------- Hints (UX copy) -------- */
   const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-  const postTotal = Math.max(0, postTotalRef.current || afterIpqc + beforePostcured + afterPostcured)
-  const sisaSumber = Math.max(0, src - (afterIpqc + beforePostcured + afterPostcured))
+  const postTotal = Math.max(0, postTotalRef.current || afterIpqc + afterPostcured)
+  const sisaSumber = Math.max(0, src - (afterIpqc + afterPostcured))
 
   const hintB = src > 0 ? `Sumber awal: ${fmt(src)} pcs` : "Belum ada sumber (mulai dari 0 pcs)"
   const hintA =
-    afterIpqc > 0 ? `Hasil IPQC: ${fmt(afterIpqc)} pcs • Sisa sumber: ${fmt(sisaSumber)} pcs` : "Menunggu hasil IPQC"
-  const hintBP =
-    beforePostcured > 0
-      ? `Dialokasikan ke curing: ${fmt(beforePostcured)} pcs dari total stage ${fmt(postTotal)} pcs`
-      : "Belum dialokasikan ke curing"
+    afterIpqc > 0
+      ? `Hasil IPQC & Dialokasikan ke curing: ${fmt(afterIpqc)} pcs • Sisa sumber: ${fmt(sisaSumber)} pcs`
+      : "Menunggu hasil IPQC"
   const hintAP =
     afterPostcured > 0
       ? `Selesai postcure: ${fmt(afterPostcured)} pcs • Sisa menunggu: ${fmt(Math.max(0, postTotal - afterPostcured))} pcs`
@@ -376,81 +436,91 @@ export default function DashboardIPQC() {
 
   /* -------- UI -------- */
   return (
-    <div className="space-y-6">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900 p-4 md:p-6 space-y-6">
       {/* Mini toast */}
       {toast && (
         <div
           role="status"
+          aria-live="polite"
           className={[
-            "fixed top-16 right-4 z-50 px-3 py-2 rounded-lg text-sm shadow",
-            toast.type === "success" ? "bg-emerald-600 text-white" : "bg-rose-600 text-white",
+            "fixed top-4 right-4 z-50 px-4 py-3 rounded-lg text-sm font-medium shadow-lg flex items-center gap-2 animate-in fade-in slide-in-from-top-2",
+            toast.type === "success" ? "bg-emerald-500 text-white" : "bg-rose-500 text-white",
           ].join(" ")}
         >
+          {toast.type === "success" ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
           {toast.msg}
         </div>
       )}
 
       {/* Title & Filters */}
-      <header className="flex flex-col gap-3 md:flex-row md:items-end md:gap-4">
-        <div className="flex-1">
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">IPQC</h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400">
+      <header className="space-y-4">
+        <div>
+          <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-slate-900 dark:text-white">
+            IPQC Dashboard
+          </h1>
+          <p className="text-slate-600 dark:text-slate-400 mt-1">
             Input & monitoring inspeksi In-Process QC berdasarkan tanggal, shift, plant, dan line.
           </p>
-
-          {/* Helper ribbon (aturan & rumus) */}
-          <div className="mt-2 text-[12px] text-slate-600 dark:text-slate-300">
-            <span className="inline-flex items-center gap-2 rounded-md bg-slate-100 dark:bg-slate-800 px-2 py-1">
-              <strong className="font-semibold">Aturan:</strong>
-              Semua angka ≥ 0, dan <code className="font-mono">S = A + BP + AP</code> (Sumber setelah IPQC harus
-              seimbang).
-            </span>
-          </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:flex gap-2">
-          <div className="flex flex-col">
-            <label className="text-xs text-slate-500">Tanggal</label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm"
-            />
-          </div>
-          <div className="flex flex-col">
-            <label className="text-xs text-slate-500">Shift</label>
-            <select
-              value={shift}
-              onChange={(e) => setShift(e.target.value as Shift)}
-              className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm"
-            >
-              <option value="S1">S1</option>
-              <option value="S2">S2</option>
-              <option value="S3">S3</option>
-            </select>
-          </div>
-          <div className="flex flex-col">
-            <label className="text-xs text-slate-500">Plant</label>
-            <input
-              value={plant}
-              onChange={(e) => setPlant(e.target.value)}
-              placeholder="HT"
-              className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm"
-            />
-          </div>
-          <div className="flex flex-col">
-            <label className="text-xs text-slate-500">Line</label>
-            <input
-              value={line}
-              onChange={(e) => setLine(e.target.value)}
-              placeholder="LINE-1"
-              className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm"
-            />
+        {/* Filters */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:gap-3">
+          <div className="flex-1 grid grid-cols-2 sm:flex gap-3">
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="date-filter" className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Tanggal
+              </label>
+              <input
+                id="date-filter"
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="shift-filter" className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Shift
+              </label>
+              <select
+                id="shift-filter"
+                value={shift}
+                onChange={(e) => setShift(e.target.value as Shift)}
+                className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+              >
+                <option value="S1">S1</option>
+                <option value="S2">S2</option>
+                <option value="S3">S3</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="plant-filter" className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Plant
+              </label>
+              <input
+                id="plant-filter"
+                value={plant}
+                onChange={(e) => setPlant(e.target.value)}
+                placeholder="HT"
+                className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="line-filter" className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                Line
+              </label>
+              <input
+                id="line-filter"
+                value={line}
+                onChange={(e) => setLine(e.target.value)}
+                placeholder="LINE-1"
+                className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+              />
+            </div>
           </div>
           <button
             onClick={exportCsv}
-            className="h-9 md:h-10 self-end rounded-lg px-3 text-sm font-medium border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+            className="h-10 rounded-lg px-4 text-sm font-medium border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
           >
             Export CSV
           </button>
@@ -458,34 +528,53 @@ export default function DashboardIPQC() {
       </header>
 
       {/* KPI Cards */}
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-        <Kpi title="Before IPQC" value={fmt(summary?.totalBeforeIpqc ?? 0)} />
-        <Kpi title="After IPQC" value={fmt(summary?.totalAfterIpqc ?? 0)} />
-        <Kpi title="Before Postcured" value={fmt(summary?.totalOnGoingPostcured ?? 0)} />
-        <Kpi title="After Postcured" value={fmt(summary?.totalAfterPostcured ?? 0)} />
-        <Kpi title="Net Available" value={fmt(netAvailable)} />
-        <Kpi title="Pass Rate" value={`${passRate}%`} />
+      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <Kpi title="Before IPQC" value={fmt(summary?.totalBeforeIpqc ?? 0)} color="blue" />
+        <Kpi title="After IPQC / Before Postcured" value={fmt(summary?.totalAfterIpqc ?? 0)} color="emerald" />
+        <Kpi title="After Postcured" value={fmt(summary?.totalAfterPostcured ?? 0)} color="cyan" />
+        <Kpi title="Net Available" value={fmt(netAvailable)} color="purple" />
+        <Kpi title="Pass Rate" value={`${passRate}%`} color="rose" />
       </section>
 
       {/* Quick Entry */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-        <header className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <h3 className="font-semibold">Input Cepat IPQC</h3>
-            {error && <span className="text-xs text-rose-600">{error}</span>}
+            <Plus className="w-5 h-5 text-blue-600" />
+            <h3 className="font-semibold text-lg">Input Cepat IPQC</h3>
           </div>
-          {/* Info pipeline */}
-          <span className="text-xs text-slate-500">
-            Catatan: <strong>After Postcured</strong> otomatis menjadi <strong>Before OQC</strong>.
+          <span className="text-xs text-slate-500 hidden sm:inline">
+            Tekan <kbd className="px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded text-xs font-mono">Enter</kbd> untuk
+            simpan
           </span>
         </header>
 
-        <div className="p-4 grid gap-3 md:grid-cols-7">
+        {/* Error Alert */}
+        {error && (
+          <div className="mx-6 mt-4 p-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-rose-900 dark:text-rose-200">{error}</p>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300"
+              aria-label="Tutup pesan error"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        <div className="p-6 grid gap-4 md:grid-cols-5">
           {/* Product picker */}
-          <div className="md:col-span-3" ref={dropdownRef}>
-            <label className="text-xs text-slate-500">Produk</label>
-            <div className="relative">
+          <div className="md:col-span-2" ref={dropdownRef}>
+            <label htmlFor="product-input" className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Produk <span className="text-rose-500">*</span>
+            </label>
+            <div className="relative mt-1.5">
               <input
+                id="product-input"
                 ref={productInputRef}
                 value={selectedProduct ? `${selectedProduct.computerCode} — ${selectedProduct.name}` : productQuery}
                 onChange={(e) => {
@@ -495,13 +584,18 @@ export default function DashboardIPQC() {
                 }}
                 onFocus={() => setShowList(true)}
                 placeholder="Klik untuk pilih / ketik untuk cari…"
-                className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+                className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-all"
               />
               {showList && (
-                <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow">
-                  {loadingProducts && <div className="px-3 py-2 text-sm text-slate-500">Loading…</div>}
+                <div className="absolute z-50 mt-2 max-h-60 w-full overflow-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg">
+                  {loadingProducts && (
+                    <div className="px-3 py-3 text-sm text-slate-500 flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Loading…
+                    </div>
+                  )}
                   {!loadingProducts && productOpts.length === 0 && (
-                    <div className="px-3 py-2 text-sm text-slate-500">Tidak ada hasil</div>
+                    <div className="px-3 py-3 text-sm text-slate-500">Tidak ada hasil</div>
                   )}
                   {!loadingProducts &&
                     productOpts.map((p) => (
@@ -512,10 +606,10 @@ export default function DashboardIPQC() {
                           setProductQuery("")
                           setShowList(false)
                         }}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800"
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors border-b border-slate-100 dark:border-slate-800 last:border-b-0"
                       >
-                        <div className="font-medium">{p.computerCode}</div>
-                        <div className="text-slate-500">
+                        <div className="font-medium text-slate-900 dark:text-white">{p.computerCode}</div>
+                        <div className="text-xs text-slate-500 dark:text-slate-400">
                           {p.name} {p.size ? `• ${p.size}` : ""}
                         </div>
                       </button>
@@ -531,45 +625,27 @@ export default function DashboardIPQC() {
             hint={hintB}
             onChange={(val) => {
               const v = Math.max(0, val)
-              const bp = Math.max(0, beforePostcured)
               const ap = Math.max(0, afterPostcured)
               beforeIpqcSourceRef.current = v
-              const maxA = Math.max(0, v - (bp + ap))
+              const maxA = Math.max(0, v - ap)
               const newA = Math.max(0, Math.min(afterIpqc, maxA))
               setAfterIpqc(newA)
-              setBeforeIpqc(Math.max(0, v - (newA + bp + ap)))
-              postTotalRef.current = newA + bp + ap
+              setBeforeIpqc(Math.max(0, v - (newA + ap)))
+              postTotalRef.current = newA + ap
             }}
           />
           <NumberField
-            label="After IPQC"
+            label="After IPQC / Before Postcured"
             value={afterIpqc}
             hint={hintA}
             onChange={(raw) => {
               const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-              const bp = Math.max(0, beforePostcured)
               const ap = Math.max(0, afterPostcured)
-              const maxA = Math.max(0, src - (bp + ap))
+              const maxA = Math.max(0, src - ap)
               const newA = Math.max(0, Math.min(Math.max(0, raw), maxA))
               setAfterIpqc(newA)
-              setBeforeIpqc(Math.max(0, src - (newA + bp + ap)))
-              postTotalRef.current = newA + bp + ap
-            }}
-          />
-          <NumberField
-            label="Before Postcured"
-            value={beforePostcured}
-            title="Mengambil dari After IPQC"
-            hint={hintBP}
-            onChange={(raw) => {
-              const postTotal = postTotalRef.current || afterIpqc + beforePostcured + afterPostcured
-              const ap = Math.max(0, afterPostcured)
-              const newBP = Math.max(0, Math.min(Math.max(0, raw), Math.max(0, postTotal - ap)))
-              setBeforePostcured(newBP)
-              const newA = Math.max(0, postTotal - ap - newBP)
-              setAfterIpqc(newA)
-              const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-              setBeforeIpqc(Math.max(0, src - (newA + newBP + ap)))
+              setBeforeIpqc(Math.max(0, src - (newA + ap)))
+              postTotalRef.current = newA + ap
             }}
           />
           <NumberField
@@ -577,117 +653,125 @@ export default function DashboardIPQC() {
             value={afterPostcured}
             hint={hintAP}
             onChange={(raw) => {
-              const postTotal = postTotalRef.current || afterIpqc + beforePostcured + afterPostcured
+              const postTotal = postTotalRef.current || afterIpqc + afterPostcured
               const srcA = Math.max(0, afterIpqc)
               const maxAP = Math.max(0, postTotal - srcA)
               const newAP = Math.max(0, Math.min(Math.max(0, raw), maxAP))
               setAfterPostcured(newAP)
 
-              const newBP = Math.max(0, postTotal - newAP - srcA)
-              setBeforePostcured(newBP)
+              const newA = Math.max(0, postTotal - newAP - srcA)
+              setAfterIpqc(newA)
 
               const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-              setBeforeIpqc(Math.max(0, src - (srcA + newBP + newAP)))
+              setBeforeIpqc(Math.max(0, src - (newA + newAP)))
             }}
           />
 
-          <div className="md:col-span-7">
-            <label className="text-xs text-slate-500">Catatan</label>
+          <div className="md:col-span-5">
+            <label htmlFor="note-input" className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              Catatan
+            </label>
             <textarea
+              id="note-input"
               value={note}
               onChange={(e) => setNote(e.target.value)}
               rows={2}
               placeholder="Opsional, catatan tambahan…"
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40"
+              className="w-full mt-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 transition-all resize-none"
             />
           </div>
 
-          <div className="md:col-span-7 flex flex-col gap-2 sm:flex-row">
+          <div className="md:col-span-5 flex flex-col gap-2 sm:flex-row">
             <button
               onClick={submitEntry}
               disabled={submitting}
-              className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+              aria-busy={submitting}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed transition-all"
             >
-              {submitting ? "Menyimpan…" : "Simpan Entri"}
+              {submitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Menyimpan…
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  Simpan Entri
+                </>
+              )}
             </button>
             <button
-              onClick={() => {
-                setSelectedProduct(null)
-                setProductQuery("")
-                setBeforeIpqc(0)
-                setAfterIpqc(0)
-                setBeforePostcured(0)
-                setAfterPostcured(0)
-                setNote("")
-                beforeIpqcSourceRef.current = 0
-                postTotalRef.current = 0
-              }}
-              className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800"
+              onClick={resetForm}
+              disabled={submitting}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-60 transition-all"
             >
+              <RotateCcw className="w-4 h-4" />
               Reset
             </button>
             <button
               onClick={() => {
                 const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-                const bp = Math.max(0, beforePostcured)
                 const ap = Math.max(0, afterPostcured)
-                const newA = Math.max(0, src - (bp + ap))
+                const newA = Math.max(0, src - ap)
                 setAfterIpqc(newA)
-                setBeforeIpqc(Math.max(0, src - (newA + bp + ap)))
-                postTotalRef.current = newA + bp + ap
+                setBeforeIpqc(Math.max(0, src - (newA + ap)))
+                postTotalRef.current = newA + ap
               }}
-              className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-sky-300 text-sky-700 hover:bg-sky-50 dark:hover:bg-sky-950/20"
+              disabled={submitting}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-cyan-300 dark:border-cyan-900 text-cyan-700 dark:text-cyan-400 bg-cyan-50 dark:bg-cyan-950/30 hover:bg-cyan-100 dark:hover:bg-cyan-950/50 disabled:opacity-60 transition-all"
             >
-              Semua Lulus (IPQC)
+              <Zap className="w-4 h-4" />
+              Semua Lulus
             </button>
           </div>
         </div>
       </section>
 
       {/* Entries table */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-        <header className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
+        <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
           <div>
-            <h3 className="font-semibold">Entri Hari Ini</h3>
-            <p className="text-xs text-slate-500">
+            <h3 className="font-semibold text-lg">Entri Hari Ini</h3>
+            <p className="text-xs text-slate-500 mt-1">
               Tanggal {date}, Shift {shift}
               {plant ? `, Plant ${plant}` : ""}
               {line ? `, Line ${line}` : ""}
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="text-sm text-slate-500">{loading ? "Loading…" : `${entries.length} entri`}</div>
+          <div className="flex items-center gap-3">
+            <div className="text-sm font-medium text-slate-600 dark:text-slate-400">
+              {loading ? "Loading…" : `${entries.length} entri`}
+            </div>
             <a
-              href={`/ipqc/history?date=${encodeURIComponent(date)}&shift=${shift}${plant ? `&plant=${plant}` : ""}${line ? `&line=${line}` : ""}`}
-              className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-sm"
+              href={`/ipqc/history?date=${encodeURIComponent(date)}&shift=${shift}${
+                plant ? `&plant=${plant}` : ""
+              }${line ? `&line=${line}` : ""}`}
+              className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-medium transition-colors"
               title="Buka Riwayat Penginputan"
             >
-              Lihat Riwayat Penginputan
+              Lihat Riwayat
             </a>
           </div>
         </header>
 
         <div className="w-full overflow-x-auto [-webkit-overflow-scrolling:touch] relative">
-          <table className="w-full text-sm table-fixed min-w-[1200px]">
+          <table className="w-full text-sm table-fixed min-w-[1000px]">
             <colgroup>
               <col style={{ width: 280 }} />
-              <col style={{ width: 120 }} />
               <col style={{ width: 120 }} />
               <col style={{ width: 150 }} />
               <col style={{ width: 150 }} />
               <col style={{ width: 260 }} />
               <col style={{ width: 120 }} />
             </colgroup>
-            <thead className="sticky top-0 z-10 bg-white/95 dark:bg-slate-900/90 backdrop-blur border-b border-slate-200 dark:border-slate-800">
-              <tr className="text-left text-slate-500">
-                <th className="px-4 py-2">Produk</th>
-                <th className="px-4 py-2 text-right">Before IPQC</th>
-                <th className="px-4 py-2 text-right">After IPQC</th>
-                <th className="px-4 py-2 text-right">Before Postcured</th>
-                <th className="px-4 py-2 text-right">After Postcured</th>
-                <th className="px-4 py-2">Catatan</th>
-                {/* sticky action column on the right */}
-                <th className="px-4 py-2 sticky right-0 bg-white/95 dark:bg-slate-900/90 backdrop-blur z-20 shadow-[inset_1px_0_0_rgba(0,0,0,0.06)] dark:shadow-[inset_1px_0_0_rgba(255,255,255,0.06)]">
+            <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-800/50 backdrop-blur border-b border-slate-200 dark:border-slate-800">
+              <tr className="text-left text-slate-600 dark:text-slate-400 font-medium">
+                <th className="px-4 py-3">Produk</th>
+                <th className="px-4 py-3 text-right">Before IPQC</th>
+                <th className="px-4 py-3 text-right">After IPQC / Before Postcured</th>
+                <th className="px-4 py-3 text-right">After Postcured</th>
+                <th className="px-4 py-3">Catatan</th>
+                <th className="px-4 py-3 sticky right-0 bg-slate-50 dark:bg-slate-800/50 z-20 shadow-[inset_1px_0_0_rgba(0,0,0,0.06)] dark:shadow-[inset_1px_0_0_rgba(255,255,255,0.06)]">
                   Aksi
                 </th>
               </tr>
@@ -697,7 +781,7 @@ export default function DashboardIPQC() {
                 entries.length === 0 &&
                 Array.from({ length: 4 }).map((_, i) => (
                   <tr key={i} className="border-t border-slate-100 dark:border-slate-800">
-                    {Array.from({ length: 7 }).map((__, j) => (
+                    {Array.from({ length: 6 }).map((__, j) => (
                       <td key={j} className="px-4 py-3">
                         <div className="h-4 w-28 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
                       </td>
@@ -717,9 +801,9 @@ export default function DashboardIPQC() {
 
               {entries.length === 0 && !loading && (
                 <tr>
-                  <td className="px-4 py-6 text-slate-500" colSpan={7}>
-                    Belum ada entri IPQC untuk kombinasi filter ini.{" "}
-                    <span className="text-slate-400">Gunakan “Input Cepat IPQC” di atas untuk menambah data.</span>
+                  <td className="px-4 py-8 text-center text-slate-500 dark:text-slate-400" colSpan={6}>
+                    <p className="font-medium">Belum ada entri IPQC</p>
+                    <p className="text-xs mt-1">Gunakan "Input Cepat IPQC" di atas untuk menambah data.</p>
                   </td>
                 </tr>
               )}
@@ -739,10 +823,16 @@ function NumberField({
   onChange,
   title,
   hint,
-}: { label: string; value: number; onChange: (v: number) => void; title?: string; hint?: string }) {
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+  title?: string
+  hint?: string
+}) {
   return (
     <div title={title}>
-      <label className="text-xs text-slate-500">{label}</label>
+      <label className="text-xs font-medium text-slate-600 dark:text-slate-400">{label}</label>
       <input
         type="number"
         inputMode="numeric"
@@ -750,10 +840,12 @@ function NumberField({
         step={1}
         value={value}
         onChange={(e) => onChange(Number(e.target.value || 0))}
-        className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600/40 text-right"
+        className="w-full mt-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 text-right transition-all"
         placeholder="0"
       />
-      <div className="mt-1 text-[11px] text-slate-400">{hint || (value === 0 ? "Belum mulai" : "")}</div>
+      <div className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-500">
+        {hint || (value === 0 ? "Belum mulai" : "")}
+      </div>
     </div>
   )
 }
@@ -769,162 +861,132 @@ function Row({
 }) {
   const [b, setB] = useState(entry.beforeIpqc)
   const [a, setA] = useState(entry.afterIpqc)
-  const [bp, setBP] = useState(entry.onGoingPostcured)
   const [ap, setAP] = useState(entry.afterPostcured)
   const [n, setN] = useState(entry.note ?? "")
 
-  const totalSourceRef = useRef<number>(
-    entry.beforeIpqc + entry.afterIpqc + entry.onGoingPostcured + entry.afterPostcured,
-  )
-  const postTotalRefRow = useRef<number>(entry.afterIpqc + entry.onGoingPostcured + entry.afterPostcured)
+  const totalSourceRef = useRef<number>(entry.beforeIpqc + entry.afterIpqc + entry.afterPostcured)
+  const postTotalRefRow = useRef<number>(entry.afterIpqc + entry.afterPostcured)
 
   useEffect(() => {
     const initB = entry.beforeIpqc
     const initA = entry.afterIpqc
-    const initBP = entry.onGoingPostcured
     const initAP = entry.afterPostcured
     setB(initB)
     setA(initA)
-    setBP(initBP)
     setAP(initAP)
     setN(entry.note ?? "")
 
-    totalSourceRef.current = initB + initA + initBP + initAP
-    postTotalRefRow.current = initA + initBP + initAP
+    totalSourceRef.current = initB + initA + initAP
+    postTotalRefRow.current = initA + initAP
   }, [entry.id])
 
   const dirty =
-    b !== entry.beforeIpqc ||
-    a !== entry.afterIpqc ||
-    bp !== entry.onGoingPostcured ||
-    ap !== entry.afterPostcured ||
-    n !== (entry.note ?? "")
+    b !== entry.beforeIpqc || a !== entry.afterIpqc || ap !== entry.afterPostcured || n !== (entry.note ?? "")
 
-  const src = Math.max(0, totalSourceRef.current || b + a + bp + ap)
-  const postTotal = Math.max(0, postTotalRefRow.current || a + bp + ap)
-  const sisaSumber = Math.max(0, src - (a + bp + ap))
+  const src = Math.max(0, totalSourceRef.current || b + a + ap)
+  const postTotal = Math.max(0, postTotalRefRow.current || a + ap)
+  const sisaSumber = Math.max(0, src - (a + ap))
 
   return (
-    <tr className="border-t border-slate-100 dark:border-slate-800 odd:bg-slate-50/60 dark:odd:bg-slate-800/30">
-      <td className="px-4 py-2">
-        <div className="font-medium">{entry.product?.computerCode ?? ""}</div>
-        <div className="text-slate-500">
+    <tr className="border-t border-slate-100 dark:border-slate-800 odd:bg-slate-50/50 dark:odd:bg-slate-800/20 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
+      <td className="px-4 py-3">
+        <div className="font-medium text-slate-900 dark:text-white">{entry.product?.computerCode ?? ""}</div>
+        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
           {entry.product?.name ?? ""}
           {entry.product?.size ? ` • ${entry.product.size}` : ""}
         </div>
       </td>
 
-      <td className="px-4 py-2 text-right align-top">
+      <td className="px-4 py-3 text-right align-top">
         <input
           type="number"
           value={b}
           onChange={(e) => {
             const v = Math.max(0, Number(e.target.value || 0))
-            const newSource = v + a + bp + ap
+            const newSource = v + a + ap
             totalSourceRef.current = newSource
-            const maxA = Math.max(0, newSource - (bp + ap))
+            const maxA = Math.max(0, newSource - ap)
             const clampedA = Math.max(0, Math.min(a, maxA))
             setA(clampedA)
-            setB(Math.max(0, newSource - (clampedA + bp + ap)))
-            postTotalRefRow.current = clampedA + bp + ap
+            setB(Math.max(0, newSource - (clampedA + ap)))
+            postTotalRefRow.current = clampedA + ap
           }}
-          className="w-full text-right rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1"
+          className="w-full text-right rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
           placeholder="0"
         />
-        <div className="mt-1 text-[11px] text-slate-400">{src > 0 ? `Sumber: ${fmt(src)} pcs` : "Belum mulai"}</div>
+        <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-500">
+          {src > 0 ? `Sumber: ${fmt(src)} pcs` : "Belum mulai"}
+        </div>
       </td>
 
-      <td className="px-4 py-2 text-right align-top">
+      <td className="px-4 py-3 text-right align-top">
         <input
           type="number"
           value={a}
           onChange={(e) => {
             const raw = Number(e.target.value || 0)
-            const srcLoc = Math.max(0, totalSourceRef.current || b + a + bp + ap)
-            const maxA = Math.max(0, srcLoc - (bp + ap))
+            const srcLoc = Math.max(0, totalSourceRef.current || b + a + ap)
+            const maxA = Math.max(0, srcLoc - ap)
             const clamped = Math.max(0, Math.min(raw, maxA))
             setA(clamped)
-            setB(Math.max(0, srcLoc - (clamped + bp + ap)))
-            postTotalRefRow.current = clamped + bp + ap
+            setB(Math.max(0, srcLoc - (clamped + ap)))
+            postTotalRefRow.current = clamped + ap
           }}
-          className="w-full text-right rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1"
+          className="w-full text-right rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
           placeholder="0"
         />
-        <div className="mt-1 text-[11px] text-slate-400">
+        <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-500">
           {a > 0
-            ? `Hasil IPQC: ${fmt(a)} pcs • Sisa sumber: ${fmt(Math.max(0, sisaSumber))} pcs`
+            ? `Hasil IPQC & Dialokasikan ke curing: ${fmt(a)} pcs • Sisa sumber: ${fmt(Math.max(0, sisaSumber))} pcs`
             : "Menunggu hasil IPQC"}
         </div>
       </td>
 
-      <td className="px-4 py-2 text-right align-top">
-        <input
-          type="number"
-          value={bp}
-          title="Ambil dari After IPQC"
-          onChange={(e) => {
-            const raw = Number(e.target.value || 0)
-            const postTotalLoc = postTotalRefRow.current || a + bp + ap
-            const newBP = Math.max(0, Math.min(raw, Math.max(0, postTotalLoc - ap)))
-            setBP(newBP)
-            const newA = Math.max(0, postTotalLoc - ap - newBP)
-            setA(newA)
-            const srcLoc = Math.max(0, totalSourceRef.current || b + a + bp + ap)
-            setB(Math.max(0, srcLoc - (newA + newBP + ap)))
-          }}
-          className="w-full text-right rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1"
-          placeholder="0"
-        />
-        <div className="mt-1 text-[11px] text-slate-400">
-          {bp > 0
-            ? `Dialokasikan ke curing: ${fmt(bp)} pcs dari total ${fmt(postTotal)} pcs`
-            : "Belum dialokasikan ke curing"}
-        </div>
-      </td>
-
-      <td className="px-4 py-2 text-right align-top">
+      <td className="px-4 py-3 text-right align-top">
         <input
           type="number"
           value={ap}
           onChange={(e) => {
             const raw = Number(e.target.value || 0)
-            const postTotalLoc = postTotalRefRow.current || a + bp + ap
+            const postTotalLoc = postTotalRefRow.current || a + ap
             const maxAP = Math.max(0, postTotalLoc - a)
             const newAP = Math.max(0, Math.min(raw, maxAP))
             setAP(newAP)
 
-            const newBP = Math.max(0, postTotalLoc - newAP - a)
-            setBP(newBP)
+            const newA = Math.max(0, postTotalLoc - newAP - a)
+            setA(newA)
 
-            const srcLoc = Math.max(0, totalSourceRef.current || b + a + bp + ap)
-            setB(Math.max(0, srcLoc - (a + newBP + newAP)))
+            const srcLoc = Math.max(0, totalSourceRef.current || b + a + ap)
+            setB(Math.max(0, srcLoc - (newA + newAP)))
           }}
-          className="w-full text-right rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1"
+          className="w-full text-right rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
           placeholder="0"
         />
-        <div className="mt-1 text-[11px] text-slate-400">
+        <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-500">
           {ap > 0
             ? `Selesai postcure: ${fmt(ap)} pcs • Sisa menunggu: ${fmt(Math.max(0, postTotal - ap))} pcs`
             : "Belum selesai postcure"}
         </div>
       </td>
 
-      <td className="px-4 py-2 align-top">
+      <td className="px-4 py-3 align-top">
         <input
           value={n}
           onChange={(e) => setN(e.target.value)}
-          className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1"
+          className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-transparent px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40"
           placeholder="Catatan…"
         />
-        <div className="mt-1 text-[11px] text-slate-400">{n ? "Catatan terisi" : "Opsional"}</div>
+        <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-500">{n ? "Catatan terisi" : "Opsional"}</div>
       </td>
 
-      <td className="px-4 py-2 sticky right-0 bg-white dark:bg-slate-900 z-10 shadow-[inset_1px_0_0_rgba(0,0,0,0.06)] dark:shadow-[inset_1px_0_0_rgba(255,255,255,0.06)]">
+      <td className="px-4 py-3 sticky right-0 bg-white dark:bg-slate-900 z-10 shadow-[inset_1px_0_0_rgba(0,0,0,0.06)] dark:shadow-[inset_1px_0_0_rgba(255,255,255,0.06)]">
         <div className="flex items-center gap-2">
           <button
-            onClick={() => onChange({ beforeIpqc: b, afterIpqc: a, onGoingPostcured: bp, afterPostcured: ap, note: n })}
+            onClick={() =>
+              onChange({ beforeIpqc: b, afterIpqc: a, onGoingPostcured: a, afterPostcured: ap, note: n })
+            }
             disabled={!dirty}
-            className="px-3 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+            className="px-3 py-1.5 rounded-md bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             title={dirty ? "Simpan perubahan" : "Tidak ada perubahan"}
             aria-label="Simpan perubahan entri"
           >
@@ -932,7 +994,7 @@ function Row({
           </button>
           <button
             onClick={onDelete}
-            className="px-3 py-1 rounded-md border border-rose-300 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/20"
+            className="px-3 py-1.5 rounded-md border border-rose-300 dark:border-rose-900 text-rose-600 dark:text-rose-400 text-xs font-medium hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-all"
             title="Hapus entri"
             aria-label="Hapus entri"
           >
@@ -944,11 +1006,46 @@ function Row({
   )
 }
 
-function Kpi({ title, value }: { title: string; value: string }) {
+function Kpi({ title, value, color }: { title: string; value: string; color: string }) {
+  const colorMap: Record<string, { bg: string; text: string; border: string }> = {
+    blue: {
+      bg: "bg-blue-50 dark:bg-blue-950/30",
+      text: "text-blue-600 dark:text-blue-400",
+      border: "border-blue-200 dark:border-blue-900",
+    },
+    emerald: {
+      bg: "bg-emerald-50 dark:bg-emerald-950/30",
+      text: "text-emerald-600 dark:text-emerald-400",
+      border: "border-emerald-200 dark:border-emerald-900",
+    },
+    amber: {
+      bg: "bg-amber-50 dark:bg-amber-950/30",
+      text: "text-amber-600 dark:text-amber-400",
+      border: "border-amber-200 dark:border-amber-900",
+    },
+    cyan: {
+      bg: "bg-cyan-50 dark:bg-cyan-950/30",
+      text: "text-cyan-600 dark:text-cyan-400",
+      border: "border-cyan-200 dark:border-cyan-900",
+    },
+    purple: {
+      bg: "bg-purple-50 dark:bg-purple-950/30",
+      text: "text-purple-600 dark:text-purple-400",
+      border: "border-purple-200 dark:border-purple-900",
+    },
+    rose: {
+      bg: "bg-rose-50 dark:bg-rose-950/30",
+      text: "text-rose-600 dark:text-rose-400",
+      border: "border-rose-200 dark:border-rose-900",
+    },
+  }
+
+  const c = colorMap[color] || colorMap.blue
+
   return (
-    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
-      <p className="text-xs text-slate-500">{title}</p>
-      <div className="mt-1 text-2xl font-semibold">{value}</div>
+    <div className={`rounded-xl border ${c.border} ${c.bg} p-4 transition-all hover:shadow-md`}>
+      <p className={`text-xs font-medium ${c.text}`}>{title}</p>
+      <div className="mt-2 text-2xl font-bold text-slate-900 dark:text-white">{value}</div>
     </div>
   )
 }
