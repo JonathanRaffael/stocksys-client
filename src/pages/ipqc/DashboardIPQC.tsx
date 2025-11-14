@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import API from "@/api/axios"
-import { AlertCircle, CheckCircle2, Loader2, Plus, RotateCcw, Zap } from "lucide-react"
+import { AlertCircle, CheckCircle2, Loader2, Plus, RotateCcw, Zap } from 'lucide-react'
 
 /* ================== Types (matching Prisma) ================== */
 type Shift = "S1" | "S2" | "S3"
@@ -51,6 +51,17 @@ type Summary = {
   netAvailable: number
   passRateIpqc: number
   passRatePostcure: number
+}
+
+type PreviousQty = {
+  found: boolean
+  beforeIpqc: number
+  afterIpqc: number
+  onGoingPostcured: number
+  afterPostcured: number
+  previousDate?: string
+  previousShift?: string
+  totalInputs?: number
 }
 
 /* ================== Helpers ================== */
@@ -133,9 +144,14 @@ export default function DashboardIPQC() {
   const [afterPostcured, setAfterPostcured] = useState<number>(0)
   const [note, setNote] = useState<string>("")
 
+  // === New: flexible flow + auto-deduct toggle ===
+  const [autoKurangi, setAutoKurangi] = useState(true)
+  const prevAfterSumRef = useRef(0) // track (afterIpqc + afterPostcured)
+
+  const [previousQty, setPreviousQty] = useState<PreviousQty | null>(null)
+  const [loadingPreviousQty, setLoadingPreviousQty] = useState(false)
+
   const productInputRef = useRef<HTMLInputElement>(null)
-  const beforeIpqcSourceRef = useRef<number>(0)
-  const postTotalRef = useRef<number>(0)
 
   /* -------- Queries -------- */
   const qs = useMemo(() => {
@@ -147,9 +163,18 @@ export default function DashboardIPQC() {
     return p.toString()
   }, [date, shift, plant, line])
 
+  const qsWithProduct = useMemo(() => {
+    const p = new URLSearchParams()
+    p.set("date", date)
+    p.set("shift", shift.toUpperCase())
+    if (plant) p.set("plant", plant)
+    if (line) p.set("line", line)
+    if (selectedProduct?.id) p.set("productId", selectedProduct.id)
+    return p.toString()
+  }, [date, shift, plant, line, selectedProduct?.id])
+
   /* -------- Loaders -------- */
   async function loadSummary() {
-    // kita coba endpoint FE saat ini (yang sesuai dengan backend kamu)
     const urlPrimary = `/ipqc/summary/summary?${qs}`
     const fallbackUrl = `/ipqc/summary?${qs}`
 
@@ -158,7 +183,6 @@ export default function DashboardIPQC() {
       try {
         response = await apiGet<any>(urlPrimary)
       } catch (e: any) {
-        // kalau misal kamu nanti benerin backend ke "/", FE ini tetap jalan
         console.warn("[IPQC] primary summary endpoint failed, trying fallback…")
         response = await apiGet<any>(fallbackUrl)
       }
@@ -179,7 +203,6 @@ export default function DashboardIPQC() {
       setSummary(data)
     } catch (e: any) {
       console.error("[IPQC] loadSummary error:", e?.message || e)
-      // jangan kosongin UI total, tapi kasih 0 biar tetap render
       setSummary({
         totalBeforeIpqc: 0,
         totalAfterIpqc: 0,
@@ -198,7 +221,7 @@ export default function DashboardIPQC() {
   async function loadEntries() {
     try {
       setLoading(true)
-      const raw = await apiGet<any>(`/entries?type=IPQC&${qs}`)
+      const raw = await apiGet<any>(`/entries?type=IPQC&${qsWithProduct}`)
       let items: DailyEntryDto[] = []
       if (Array.isArray(raw)) {
         items = raw
@@ -215,11 +238,71 @@ export default function DashboardIPQC() {
     }
   }
 
+  async function loadPreviousQty(productId: string) {
+    if (!productId) {
+      setPreviousQty(null)
+      setBeforeIpqc(0)
+      setAfterIpqc(0)
+      setAfterPostcured(0)
+      return
+    }
+
+    try {
+      setLoadingPreviousQty(true)
+      const data = await apiGet<PreviousQty>(`/entries/previous-qty?productId=${productId}&date=${date}&shift=${shift}`)
+      setPreviousQty(data)
+
+      if (data.found) {
+        setBeforeIpqc(data.beforeIpqc)
+        setAfterIpqc(data.afterIpqc)
+        setAfterPostcured(data.afterPostcured)
+        prevAfterSumRef.current = data.afterIpqc + data.afterPostcured
+      } else {
+        setBeforeIpqc(0)
+        setAfterIpqc(0)
+        setAfterPostcured(0)
+        prevAfterSumRef.current = 0
+      }
+    } catch (e: any) {
+      console.error("[IPQC] loadPreviousQty error:", e?.message || e)
+      setPreviousQty(null)
+      setBeforeIpqc(0)
+      setAfterIpqc(0)
+      setAfterPostcured(0)
+      prevAfterSumRef.current = 0
+    } finally {
+      setLoadingPreviousQty(false)
+    }
+  }
+
   useEffect(() => {
-    loadSummary()
-    loadEntries()
+    if (selectedProduct?.id) {
+      loadSummary()
+      loadEntries()
+    } else {
+      // If no product selected, clear entries to avoid showing entries from other products
+      setEntries([])
+      setSummary({
+        totalBeforeIpqc: 0,
+        totalAfterIpqc: 0,
+        totalOnGoingPostcured: 0,
+        totalAfterPostcured: 0,
+        totalBeforeOqc: 0,
+        totalAfterOqc: 0,
+        totalHoldOrReturn: 0,
+        netAvailable: 0,
+        passRateIpqc: 0,
+        passRatePostcure: 0,
+      })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qs])
+  }, [qsWithProduct, selectedProduct?.id])
+
+  useEffect(() => {
+    if (selectedProduct?.id) {
+      loadPreviousQty(selectedProduct.id)
+    }
+  }, [selectedProduct?.id, date, shift])
 
   /* -------- Product dropdown (debounced) -------- */
   const [productOpts, setProductOpts] = useState<Product[]>([])
@@ -228,16 +311,15 @@ export default function DashboardIPQC() {
   const dropdownRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<number | null>(null)
 
+
   useEffect(() => {
     if (!showList) return
     const fetcher = async () => {
       try {
         setLoadingProducts(true)
-        const url = productQuery
-          ? `/products?query=${encodeURIComponent(productQuery)}&take=50`
-          : `/products?take=50`
+        const url = productQuery ? `/products?query=${encodeURIComponent(productQuery)}&take=50` : `/products?take=50`
         const raw = await apiGet<any>(url)
-        const items: Product[] = Array.isArray(raw) ? raw : raw.items ?? []
+        const items: Product[] = Array.isArray(raw) ? raw : (raw.items ?? [])
         setProductOpts(items.filter((p) => p.isActive ?? true))
       } catch {
         setProductOpts([])
@@ -251,6 +333,7 @@ export default function DashboardIPQC() {
       if (debounceRef.current) window.clearTimeout(debounceRef.current)
     }
   }, [showList, productQuery])
+
 
   useEffect(() => {
     if (!showList) return
@@ -287,8 +370,8 @@ export default function DashboardIPQC() {
     setAfterPostcured(0)
     setNote("")
     setError(null)
-    beforeIpqcSourceRef.current = 0
-    postTotalRef.current = 0
+    setPreviousQty(null)
+    prevAfterSumRef.current = 0
   }
 
   /* -------- Submit -------- */
@@ -303,7 +386,7 @@ export default function DashboardIPQC() {
       productInputRef.current?.focus()
       return
     }
-    if (beforeIpqc < 0 || afterIpqc < 0 || afterPostcured < 0) {
+    if ([beforeIpqc, afterIpqc, afterPostcured].some((v) => v < 0)) {
       setError("Angka tidak boleh negatif.")
       return
     }
@@ -315,10 +398,10 @@ export default function DashboardIPQC() {
       plant: plant || null,
       line: line || null,
       role: user.role as Role,
-      beforeIpqc,
-      afterIpqc,
-      onGoingPostcured: afterIpqc,
-      afterPostcured,
+      beforeIpqc: beforeIpqc || 0,
+      afterIpqc: afterIpqc || 0,
+      onGoingPostcured: afterIpqc || 0,
+      afterPostcured: afterPostcured || 0,
       beforeOqc: 0,
       afterOqc: 0,
       onHoldOrReturn: 0,
@@ -335,7 +418,6 @@ export default function DashboardIPQC() {
       showToast("✓ Entri tersimpan dengan sukses")
       setSubmitting(false)
 
-      // reload data
       setTimeout(async () => {
         try {
           await Promise.all([loadSummary(), loadEntries()])
@@ -407,9 +489,7 @@ export default function DashboardIPQC() {
       e.afterPostcured,
       (e.note ?? "").replace(/\n/g, " "),
     ])
-    const csv = [headers, ...rows]
-      .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
-      .join("\n")
+    const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n")
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -419,20 +499,42 @@ export default function DashboardIPQC() {
     URL.revokeObjectURL(url)
   }
 
-  /* -------- Hints (UX copy) -------- */
-  const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-  const postTotal = Math.max(0, postTotalRef.current || afterIpqc + afterPostcured)
-  const sisaSumber = Math.max(0, src - (afterIpqc + afterPostcured))
+  /* -------- Simple hints -------- */
+  const hintB = autoKurangi
+    ? "Mode auto-kurangi aktif. Before akan berkurang sesuai total After."
+    : "Opsional. Tidak akan otomatis berkurang."
+  const hintA = "Isi hasil IPQC / alokasi ke curing (boleh tanpa Before)."
+  const hintAP = "Isi hasil selesai postcure (jika ada)."
 
-  const hintB = src > 0 ? `Sumber awal: ${fmt(src)} pcs` : "Belum ada sumber (mulai dari 0 pcs)"
-  const hintA =
-    afterIpqc > 0
-      ? `Hasil IPQC & Dialokasikan ke curing: ${fmt(afterIpqc)} pcs • Sisa sumber: ${fmt(sisaSumber)} pcs`
-      : "Menunggu hasil IPQC"
-  const hintAP =
-    afterPostcured > 0
-      ? `Selesai postcure: ${fmt(afterPostcured)} pcs • Sisa menunggu: ${fmt(Math.max(0, postTotal - afterPostcured))} pcs`
-      : "Belum selesai postcure"
+  /* -------- Handlers untuk Input Cepat -------- */
+
+  const handleAfterPostcuredChange = (val: number) => {
+    const v = Math.max(0, val)
+
+    const deducted = v - afterPostcured // berapa yang ditambah/dikurangi
+    const newAfterIpqc = Math.max(0, afterIpqc - deducted)
+
+    setAfterPostcured(v)
+    setAfterIpqc(newAfterIpqc)
+  }
+
+  const handleBeforeIpqcChange = (val: number) => {
+    const v = Math.max(0, val)
+    setBeforeIpqc(v)
+    prevAfterSumRef.current = afterIpqc + afterPostcured
+  }
+
+  const handleAfterIpqcChange = (val: number) => {
+    const v = Math.max(0, val)
+    const newAfterSum = v + afterPostcured
+    const diff = newAfterSum - prevAfterSumRef.current // delta in total After
+    setAfterIpqc(v)
+
+    if (autoKurangi && diff !== 0) {
+      setBeforeIpqc((b) => Math.max(0, b - diff))
+    }
+    prevAfterSumRef.current = newAfterSum
+  }
 
   /* -------- UI -------- */
   return (
@@ -527,7 +629,6 @@ export default function DashboardIPQC() {
         </div>
       </header>
 
-      {/* KPI Cards */}
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Kpi title="Before IPQC" value={fmt(summary?.totalBeforeIpqc ?? 0)} color="blue" />
         <Kpi title="After IPQC / Before Postcured" value={fmt(summary?.totalAfterIpqc ?? 0)} color="emerald" />
@@ -536,20 +637,29 @@ export default function DashboardIPQC() {
         <Kpi title="Pass Rate" value={`${passRate}%`} color="rose" />
       </section>
 
-      {/* Quick Entry */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
         <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Plus className="w-5 h-5 text-blue-600" />
             <h3 className="font-semibold text-lg">Input Cepat IPQC</h3>
           </div>
-          <span className="text-xs text-slate-500 hidden sm:inline">
-            Tekan <kbd className="px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded text-xs font-mono">Enter</kbd> untuk
-            simpan
-          </span>
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+              <input
+                type="checkbox"
+                className="rounded border-slate-300 dark:border-slate-700"
+                checked={autoKurangi}
+                onChange={(e) => setAutoKurangi(e.target.checked)}
+              />
+              Auto-kurangi Before IPQC
+            </label>
+            <span className="text-xs text-slate-500 hidden sm:inline">
+              Tekan <kbd className="px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded text-xs font-mono">Enter</kbd>{" "}
+              untuk simpan
+            </span>
+          </div>
         </header>
 
-        {/* Error Alert */}
         {error && (
           <div className="mx-6 mt-4 p-3 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 flex-shrink-0 mt-0.5" />
@@ -567,7 +677,6 @@ export default function DashboardIPQC() {
         )}
 
         <div className="p-6 grid gap-4 md:grid-cols-5">
-          {/* Product picker */}
           <div className="md:col-span-2" ref={dropdownRef}>
             <label htmlFor="product-input" className="text-xs font-medium text-slate-600 dark:text-slate-400">
               Produk <span className="text-rose-500">*</span>
@@ -605,6 +714,7 @@ export default function DashboardIPQC() {
                           setSelectedProduct(p)
                           setProductQuery("")
                           setShowList(false)
+                          loadPreviousQty(p.id)
                         }}
                         className="w-full text-left px-3 py-2.5 text-sm hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors border-b border-slate-100 dark:border-slate-800 last:border-b-0"
                       >
@@ -619,53 +729,70 @@ export default function DashboardIPQC() {
             </div>
           </div>
 
-          <NumberField
-            label="Before IPQC"
-            value={beforeIpqc}
-            hint={hintB}
-            onChange={(val) => {
-              const v = Math.max(0, val)
-              const ap = Math.max(0, afterPostcured)
-              beforeIpqcSourceRef.current = v
-              const maxA = Math.max(0, v - ap)
-              const newA = Math.max(0, Math.min(afterIpqc, maxA))
-              setAfterIpqc(newA)
-              setBeforeIpqc(Math.max(0, v - (newA + ap)))
-              postTotalRef.current = newA + ap
-            }}
-          />
+          <NumberField label="Before IPQC" value={beforeIpqc} hint={hintB} onChange={handleBeforeIpqcChange} />
+
           <NumberField
             label="After IPQC / Before Postcured"
             value={afterIpqc}
             hint={hintA}
-            onChange={(raw) => {
-              const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-              const ap = Math.max(0, afterPostcured)
-              const maxA = Math.max(0, src - ap)
-              const newA = Math.max(0, Math.min(Math.max(0, raw), maxA))
-              setAfterIpqc(newA)
-              setBeforeIpqc(Math.max(0, src - (newA + ap)))
-              postTotalRef.current = newA + ap
-            }}
+            onChange={handleAfterIpqcChange}
           />
+
           <NumberField
             label="After Postcured"
             value={afterPostcured}
             hint={hintAP}
-            onChange={(raw) => {
-              const postTotal = postTotalRef.current || afterIpqc + afterPostcured
-              const srcA = Math.max(0, afterIpqc)
-              const maxAP = Math.max(0, postTotal - srcA)
-              const newAP = Math.max(0, Math.min(Math.max(0, raw), maxAP))
-              setAfterPostcured(newAP)
-
-              const newA = Math.max(0, postTotal - newAP - srcA)
-              setAfterIpqc(newA)
-
-              const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-              setBeforeIpqc(Math.max(0, src - (newA + newAP)))
-            }}
+            onChange={handleAfterPostcuredChange}
           />
+
+          {selectedProduct && (
+            <div className="md:col-span-5 p-4 rounded-lg bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-950/30 dark:to-orange-950/30 border border-amber-200 dark:border-amber-900">
+              <h4 className="text-sm font-semibold text-amber-900 dark:text-amber-200 mb-3">
+                📊 Total Qty dari Semua Penginputan
+              </h4>
+              {loadingPreviousQty ? (
+                <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Memuat data…
+                </div>
+              ) : previousQty && previousQty.found ? (
+                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
+                  <div className="p-3 rounded bg-white dark:bg-slate-800">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total Before IPQC</p>
+                    <p className="text-lg font-bold text-amber-700 dark:text-amber-300">
+                      {fmt(previousQty.beforeIpqc)}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded bg-white dark:bg-slate-800">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total After IPQC</p>
+                    <p className="text-lg font-bold text-emerald-700 dark:text-emerald-300">
+                      {fmt(previousQty.afterIpqc)}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded bg-white dark:bg-slate-800">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total Ongoing Postcured</p>
+                    <p className="text-lg font-bold text-cyan-700 dark:text-cyan-300">
+                      {fmt(previousQty.onGoingPostcured)}
+                    </p>
+                  </div>
+                  <div className="p-3 rounded bg-white dark:bg-slate-800">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total After Postcured</p>
+                    <p className="text-lg font-bold text-purple-700 dark:text-purple-300">
+                      {fmt(previousQty.afterPostcured)}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-amber-700 dark:text-amber-300">Tidak ada data penginputan sebelumnya</p>
+              )}
+              {previousQty?.found && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-3">
+                  Total {previousQty.totalInputs ?? 1} penginputan hingga Shift {previousQty.previousShift} pada tanggal{" "}
+                  {previousQty.previousDate}
+                </p>
+              )}
+            </div>
+          )}
 
           <div className="md:col-span-5">
             <label htmlFor="note-input" className="text-xs font-medium text-slate-600 dark:text-slate-400">
@@ -710,12 +837,15 @@ export default function DashboardIPQC() {
             </button>
             <button
               onClick={() => {
-                const src = Math.max(0, beforeIpqcSourceRef.current || 0)
-                const ap = Math.max(0, afterPostcured)
-                const newA = Math.max(0, src - ap)
-                setAfterIpqc(newA)
-                setBeforeIpqc(Math.max(0, src - (newA + ap)))
-                postTotalRef.current = newA + ap
+                setAfterIpqc((_) => {
+                  const target = beforeIpqc
+                  const newAfterSum = target + afterPostcured
+                  const diff = newAfterSum - prevAfterSumRef.current
+                  if (autoKurangi && diff !== 0) setBeforeIpqc((b) => Math.max(0, b - diff))
+                  prevAfterSumRef.current = newAfterSum
+                  return target
+                })
+                setAfterPostcured(0)
               }}
               disabled={submitting}
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-cyan-300 dark:border-cyan-900 text-cyan-700 dark:text-cyan-400 bg-cyan-50 dark:bg-cyan-950/30 hover:bg-cyan-100 dark:hover:bg-cyan-950/50 disabled:opacity-60 transition-all"
@@ -727,15 +857,24 @@ export default function DashboardIPQC() {
         </div>
       </section>
 
-      {/* Entries table */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
         <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
           <div>
             <h3 className="font-semibold text-lg">Entri Hari Ini</h3>
             <p className="text-xs text-slate-500 mt-1">
-              Tanggal {date}, Shift {shift}
-              {plant ? `, Plant ${plant}` : ""}
-              {line ? `, Line ${line}` : ""}
+              {selectedProduct ? (
+                <>
+                  Produk: <strong>{selectedProduct.computerCode}</strong> • Tanggal {date}, Shift {shift}
+                  {plant ? `, Plant ${plant}` : ""}
+                  {line ? `, Line ${line}` : ""}
+                </>
+              ) : (
+                <>
+                  Tanggal {date}, Shift {shift}
+                  {plant ? `, Plant ${plant}` : ""}
+                  {line ? `, Line ${line}` : ""}
+                </>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -743,9 +882,7 @@ export default function DashboardIPQC() {
               {loading ? "Loading…" : `${entries.length} entri`}
             </div>
             <a
-              href={`/ipqc/history?date=${encodeURIComponent(date)}&shift=${shift}${
-                plant ? `&plant=${plant}` : ""
-              }${line ? `&line=${line}` : ""}`}
+              href={`/ipqc/history?date=${encodeURIComponent(date)}&shift=${shift}${plant ? `&plant=${plant}` : ""}${line ? `&line=${line}` : ""}${selectedProduct?.id ? `&productId=${selectedProduct.id}` : ""}`}
               className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-medium transition-colors"
               title="Buka Riwayat Penginputan"
             >
@@ -802,8 +939,12 @@ export default function DashboardIPQC() {
               {entries.length === 0 && !loading && (
                 <tr>
                   <td className="px-4 py-8 text-center text-slate-500 dark:text-slate-400" colSpan={6}>
-                    <p className="font-medium">Belum ada entri IPQC</p>
-                    <p className="text-xs mt-1">Gunakan "Input Cepat IPQC" di atas untuk menambah data.</p>
+                    <p className="font-medium">
+                      {selectedProduct ? "Belum ada entri IPQC untuk produk ini" : "Pilih produk untuk melihat history entri hari ini"}
+                    </p>
+                    <p className="text-xs mt-1">
+                      {selectedProduct ? "Gunakan form di atas untuk menambah data." : "Pilih produk terlebih dulu dari dropdown di atas"}
+                    </p>
                   </td>
                 </tr>
               )}
@@ -982,9 +1123,7 @@ function Row({
       <td className="px-4 py-3 sticky right-0 bg-white dark:bg-slate-900 z-10 shadow-[inset_1px_0_0_rgba(0,0,0,0.06)] dark:shadow-[inset_1px_0_0_rgba(255,255,255,0.06)]">
         <div className="flex items-center gap-2">
           <button
-            onClick={() =>
-              onChange({ beforeIpqc: b, afterIpqc: a, onGoingPostcured: a, afterPostcured: ap, note: n })
-            }
+            onClick={() => onChange({ beforeIpqc: b, afterIpqc: a, onGoingPostcured: a, afterPostcured: ap, note: n })}
             disabled={!dirty}
             className="px-3 py-1.5 rounded-md bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             title={dirty ? "Simpan perubahan" : "Tidak ada perubahan"}

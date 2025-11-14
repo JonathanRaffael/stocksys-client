@@ -97,7 +97,7 @@ export default function DashboardAdmin() {
             </p>
           </div>
 
-          {/* Slot aksi kanan (misal tombol global) */}
+          {/* Slot aksi kanan (misal tombol global) */} 
           <div className="hidden md:flex items-center gap-2">
             {/* Contoh placeholder:
             <button className="btn-ghost">Refresh</button>
