@@ -2,9 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import API from "@/api/axios"
-import { AlertCircle, CheckCircle2, Loader2, Plus, RotateCcw, Zap } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Loader2, Plus, RotateCcw, Zap } from "lucide-react"
 
-/* ================== Types (matching Prisma) ================== */
+/* ================== Types (matching Prisma + backend helper) ================== */
 type Shift = "S1" | "S2" | "S3"
 type Role = "IPQC" | "OQC" | "MASTER" | "ADMIN"
 
@@ -53,14 +53,23 @@ type Summary = {
   passRatePostcure: number
 }
 
+/** Harus match dengan PreviousQtyResult di backend */
 type PreviousQty = {
   found: boolean
+
+  // sisa per proses
   beforeIpqc: number
   afterIpqc: number
-  onGoingPostcured: number
   afterPostcured: number
-  previousDate?: string
-  previousShift?: string
+
+  // kumulatif mentah
+  rawBeforeIpqc: number
+  rawAfterIpqc: number
+  rawOnGoingPostcured: number
+  rawAfterPostcured: number
+
+  previousDate?: string | null
+  previousShift?: Shift | null
   totalInputs?: number
 }
 
@@ -144,7 +153,6 @@ export default function DashboardIPQC() {
   const [afterPostcured, setAfterPostcured] = useState<number>(0)
   const [note, setNote] = useState<string>("")
 
-  // === New: flexible flow + auto-deduct toggle ===
   const [autoKurangi, setAutoKurangi] = useState(true)
   const prevAfterSumRef = useRef(0) // track (afterIpqc + afterPostcured)
 
@@ -249,10 +257,14 @@ export default function DashboardIPQC() {
 
     try {
       setLoadingPreviousQty(true)
-      const data = await apiGet<PreviousQty>(`/entries/previous-qty?productId=${productId}&date=${date}&shift=${shift}`)
+      const data = await apiGet<PreviousQty>(
+        `/entries/previous-qty?productId=${productId}&date=${date}&shift=${shift}`
+      )
+
       setPreviousQty(data)
 
       if (data.found) {
+        // Prefill dengan SISA saldo per proses (sesuai backend baru)
         setBeforeIpqc(data.beforeIpqc)
         setAfterIpqc(data.afterIpqc)
         setAfterPostcured(data.afterPostcured)
@@ -280,7 +292,6 @@ export default function DashboardIPQC() {
       loadSummary()
       loadEntries()
     } else {
-      // If no product selected, clear entries to avoid showing entries from other products
       setEntries([])
       setSummary({
         totalBeforeIpqc: 0,
@@ -311,15 +322,16 @@ export default function DashboardIPQC() {
   const dropdownRef = useRef<HTMLDivElement>(null)
   const debounceRef = useRef<number | null>(null)
 
-
   useEffect(() => {
     if (!showList) return
     const fetcher = async () => {
       try {
         setLoadingProducts(true)
-        const url = productQuery ? `/products?query=${encodeURIComponent(productQuery)}&take=50` : `/products?take=50`
+        const url = productQuery
+          ? `/products?query=${encodeURIComponent(productQuery)}&take=50`
+          : `/products?take=50`
         const raw = await apiGet<any>(url)
-        const items: Product[] = Array.isArray(raw) ? raw : (raw.items ?? [])
+        const items: Product[] = Array.isArray(raw) ? raw : raw.items ?? []
         setProductOpts(items.filter((p) => p.isActive ?? true))
       } catch {
         setProductOpts([])
@@ -333,7 +345,6 @@ export default function DashboardIPQC() {
       if (debounceRef.current) window.clearTimeout(debounceRef.current)
     }
   }, [showList, productQuery])
-
 
   useEffect(() => {
     if (!showList) return
@@ -398,10 +409,13 @@ export default function DashboardIPQC() {
       plant: plant || null,
       line: line || null,
       role: user.role as Role,
+
+      // tiga proses utama
       beforeIpqc: beforeIpqc || 0,
       afterIpqc: afterIpqc || 0,
-      onGoingPostcured: afterIpqc || 0,
+      onGoingPostcured: 0, // tidak dipakai di helper previous-qty
       afterPostcured: afterPostcured || 0,
+
       beforeOqc: 0,
       afterOqc: 0,
       onHoldOrReturn: 0,
@@ -420,7 +434,7 @@ export default function DashboardIPQC() {
 
       setTimeout(async () => {
         try {
-          await Promise.all([loadSummary(), loadEntries()])
+          await Promise.all([loadSummary(), loadEntries(), selectedProduct?.id && loadPreviousQty(selectedProduct.id)])
         } catch (e) {
           console.error("[IPQC] reload after submit error:", e)
         }
@@ -489,7 +503,9 @@ export default function DashboardIPQC() {
       e.afterPostcured,
       (e.note ?? "").replace(/\n/g, " "),
     ])
-    const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n")
+    const csv = [headers, ...rows]
+      .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+      .join("\n")
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -510,12 +526,12 @@ export default function DashboardIPQC() {
 
   const handleAfterPostcuredChange = (val: number) => {
     const v = Math.max(0, val)
-
-    const deducted = v - afterPostcured // berapa yang ditambah/dikurangi
+    const deducted = v - afterPostcured // selisih perubahan
     const newAfterIpqc = Math.max(0, afterIpqc - deducted)
 
     setAfterPostcured(v)
     setAfterIpqc(newAfterIpqc)
+    prevAfterSumRef.current = newAfterIpqc + v
   }
 
   const handleBeforeIpqcChange = (val: number) => {
@@ -637,6 +653,7 @@ export default function DashboardIPQC() {
         <Kpi title="Pass Rate" value={`${passRate}%`} color="rose" />
       </section>
 
+      {/* FORM INPUT CEPAT */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
         <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -654,8 +671,9 @@ export default function DashboardIPQC() {
               Auto-kurangi Before IPQC
             </label>
             <span className="text-xs text-slate-500 hidden sm:inline">
-              Tekan <kbd className="px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded text-xs font-mono">Enter</kbd>{" "}
-              untuk simpan
+              Tekan{" "}
+              <kbd className="px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded text-xs font-mono">Enter</kbd> untuk
+              simpan
             </span>
           </div>
         </header>
@@ -748,7 +766,7 @@ export default function DashboardIPQC() {
           {selectedProduct && (
             <div className="md:col-span-5 p-4 rounded-lg bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-950/30 dark:to-orange-950/30 border border-amber-200 dark:border-amber-900">
               <h4 className="text-sm font-semibold text-amber-900 dark:text-amber-200 mb-3">
-                📊 Total Qty dari Semua Penginputan
+                📊 Total Qty Kumulatif & Sisa yang Bisa Diproses
               </h4>
               {loadingPreviousQty ? (
                 <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
@@ -756,38 +774,107 @@ export default function DashboardIPQC() {
                   Memuat data…
                 </div>
               ) : previousQty && previousQty.found ? (
-                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
-                  <div className="p-3 rounded bg-white dark:bg-slate-800">
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total Before IPQC</p>
-                    <p className="text-lg font-bold text-amber-700 dark:text-amber-300">
-                      {fmt(previousQty.beforeIpqc)}
-                    </p>
+                <div className="space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
+                    <div className="p-3 rounded bg-white dark:bg-slate-800">
+                      {loadingPreviousQty ? (
+  <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+    <Loader2 className="w-4 h-4 animate-spin" />
+    Memuat data…
+  </div>
+) : previousQty && previousQty.found ? (
+  <div className="space-y-3">
+    <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
+      {/* BEFORE IPQC = SALDO */}
+      <div className="p-3 rounded bg-white dark:bg-slate-800">
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
+          Before IPQC (Saldo Saat Ini)
+        </p>
+        <p className="text-lg font-bold text-blue-700 dark:text-blue-300">
+          {fmt(previousQty.beforeIpqc)}
+        </p>
+        <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
+          Total input: {fmt(previousQty.rawBeforeIpqc)} pcs
+        </p>
+      </div>
+
+      {/* AFTER IPQC = SALDO */}
+      <div className="p-3 rounded bg-white dark:bg-slate-800">
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
+          After IPQC / Before Postcured (Saldo)
+        </p>
+        <p className="text-lg font-bold text-emerald-700 dark:text-emerald-300">
+          {fmt(previousQty.afterIpqc)}
+        </p>
+        <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
+          Total input: {fmt(previousQty.rawAfterIpqc)} pcs
+        </p>
+      </div>
+
+      {/* ONGOING POSTCURE (kalau mau tetap tampil kumulatif mentah) */}
+      <div className="p-3 rounded bg-white dark:bg-slate-800">
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
+          Total Ongoing Postcured
+        </p>
+        <p className="text-lg font-bold text-cyan-700 dark:text-cyan-300">
+          {fmt(previousQty.rawOnGoingPostcured)}
+        </p>
+      </div>
+
+      {/* AFTER POSTCURE */}
+      <div className="p-3 rounded bg-white dark:bg-slate-800">
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">
+          Total After Postcured
+        </p>
+        <p className="text-lg font-bold text-purple-700 dark:text-purple-300">
+          {fmt(previousQty.rawAfterPostcured)}
+        </p>
+      </div>
+    </div>
+
+    <div className="p-2 rounded bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900">
+      <p className="text-xs text-blue-700 dark:text-blue-300">
+        <strong>Catatan:</strong> Form di atas sudah otomatis terisi dengan{" "}
+        <strong>saldo yang bisa diproses</strong> per tahap. Isi angka sesuai proses shift ini saja.
+      </p>
+    </div>
+  </div>
+) : (
+  <p className="text-sm text-amber-700 dark:text-amber-300">
+    Tidak ada data penginputan sebelumnya. Input bebas untuk produk ini.
+  </p>
+)}
+
+                    </div>
+                    <div className="p-3 rounded bg-white dark:bg-slate-800">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total Ongoing Postcured</p>
+                      <p className="text-lg font-bold text-cyan-700 dark:text-cyan-300">
+                        {fmt(previousQty.rawOnGoingPostcured)}
+                      </p>
+                      {/* backend baru tidak kirim sisa khusus untuk ongoing */}
+                    </div>
+                    <div className="p-3 rounded bg-white dark:bg-slate-800">
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total After Postcured</p>
+                      <p className="text-lg font-bold text-purple-700 dark:text-purple-300">
+                        {fmt(previousQty.rawAfterPostcured)}
+                      </p>
+                    </div>
                   </div>
-                  <div className="p-3 rounded bg-white dark:bg-slate-800">
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total After IPQC</p>
-                    <p className="text-lg font-bold text-emerald-700 dark:text-emerald-300">
-                      {fmt(previousQty.afterIpqc)}
-                    </p>
-                  </div>
-                  <div className="p-3 rounded bg-white dark:bg-slate-800">
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total Ongoing Postcured</p>
-                    <p className="text-lg font-bold text-cyan-700 dark:text-cyan-300">
-                      {fmt(previousQty.onGoingPostcured)}
-                    </p>
-                  </div>
-                  <div className="p-3 rounded bg-white dark:bg-slate-800">
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1">Total After Postcured</p>
-                    <p className="text-lg font-bold text-purple-700 dark:text-purple-300">
-                      {fmt(previousQty.afterPostcured)}
+                  <div className="p-2 rounded bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900">
+                    <p className="text-xs text-blue-700 dark:text-blue-300">
+                      <strong>Catatan:</strong> Form di atas sudah otomatis terisi dengan{" "}
+                      <strong>sisa yang bisa diproses</strong>. Inputkan angka sesuai proses shift ini saja.
                     </p>
                   </div>
                 </div>
               ) : (
-                <p className="text-sm text-amber-700 dark:text-amber-300">Tidak ada data penginputan sebelumnya</p>
+                <p className="text-sm text-amber-700 dark:text-amber-300">
+                  Tidak ada data penginputan sebelumnya. Input bebas untuk produk ini.
+                </p>
               )}
               {previousQty?.found && (
                 <p className="text-xs text-amber-600 dark:text-amber-400 mt-3">
-                  Total {previousQty.totalInputs ?? 1} penginputan hingga Shift {previousQty.previousShift} pada tanggal{" "}
+                  Total {previousQty.totalInputs ?? 1} penginputan hingga Shift {previousQty.previousShift} pada{" "}
                   {previousQty.previousDate}
                 </p>
               )}
@@ -837,9 +924,10 @@ export default function DashboardIPQC() {
             </button>
             <button
               onClick={() => {
+                // semua sisa before dianggap lulus ke after
                 setAfterIpqc((_) => {
                   const target = beforeIpqc
-                  const newAfterSum = target + afterPostcured
+                  const newAfterSum = target + 0 // afterPostcured akan diset 0
                   const diff = newAfterSum - prevAfterSumRef.current
                   if (autoKurangi && diff !== 0) setBeforeIpqc((b) => Math.max(0, b - diff))
                   prevAfterSumRef.current = newAfterSum
@@ -857,6 +945,7 @@ export default function DashboardIPQC() {
         </div>
       </section>
 
+      {/* TABEL ENTRI HARI INI */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm">
         <header className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
           <div>
@@ -882,7 +971,9 @@ export default function DashboardIPQC() {
               {loading ? "Loading…" : `${entries.length} entri`}
             </div>
             <a
-              href={`/ipqc/history?date=${encodeURIComponent(date)}&shift=${shift}${plant ? `&plant=${plant}` : ""}${line ? `&line=${line}` : ""}${selectedProduct?.id ? `&productId=${selectedProduct.id}` : ""}`}
+              href={`/ipqc/history?date=${encodeURIComponent(date)}&shift=${shift}${
+                plant ? `&plant=${plant}` : ""
+              }${line ? `&line=${line}` : ""}${selectedProduct?.id ? `&productId=${selectedProduct.id}` : ""}`}
               className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-medium transition-colors"
               title="Buka Riwayat Penginputan"
             >
@@ -940,10 +1031,14 @@ export default function DashboardIPQC() {
                 <tr>
                   <td className="px-4 py-8 text-center text-slate-500 dark:text-slate-400" colSpan={6}>
                     <p className="font-medium">
-                      {selectedProduct ? "Belum ada entri IPQC untuk produk ini" : "Pilih produk untuk melihat history entri hari ini"}
+                      {selectedProduct
+                        ? "Belum ada entri IPQC untuk produk ini"
+                        : "Pilih produk untuk melihat history entri hari ini"}
                     </p>
                     <p className="text-xs mt-1">
-                      {selectedProduct ? "Gunakan form di atas untuk menambah data." : "Pilih produk terlebih dulu dari dropdown di atas"}
+                      {selectedProduct
+                        ? "Gunakan form di atas untuk menambah data."
+                        : "Pilih produk terlebih dulu dari dropdown di atas"}
                     </p>
                   </td>
                 </tr>
@@ -1123,7 +1218,15 @@ function Row({
       <td className="px-4 py-3 sticky right-0 bg-white dark:bg-slate-900 z-10 shadow-[inset_1px_0_0_rgba(0,0,0,0.06)] dark:shadow-[inset_1px_0_0_rgba(255,255,255,0.06)]">
         <div className="flex items-center gap-2">
           <button
-            onClick={() => onChange({ beforeIpqc: b, afterIpqc: a, onGoingPostcured: a, afterPostcured: ap, note: n })}
+            onClick={() =>
+              onChange({
+                beforeIpqc: b,
+                afterIpqc: a,
+                onGoingPostcured: 0,
+                afterPostcured: ap,
+                note: n,
+              })
+            }
             disabled={!dirty}
             className="px-3 py-1.5 rounded-md bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             title={dirty ? "Simpan perubahan" : "Tidak ada perubahan"}
